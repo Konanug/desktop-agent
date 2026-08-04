@@ -146,3 +146,98 @@ throughput — a 260×260 animation region goes from ~12 to ~24 fps. Requires be
 then a 10-minute soak at 32 MHz checking for tearing and `dmesg` SPI errors. `backup/config.txt.orig`
 from Phase 0 is the rollback. 48 MHz was considered and declined: ILI9486 clones get progressively less
 reliable, and intermittent corruption is exactly the failure a short soak would miss.
+
+---
+
+## D6 — Use the `openai-codex` provider, not the Codex App-Server runtime
+
+**Phase:** 3
+**Date:** 2026-08-03
+**Supersedes:** the Phase 3 approach in the original architecture proposal.
+
+### What changed
+
+The approved plan called for Hermes' **Codex App-Server runtime** (`/codex-runtime codex_app_server`),
+which requires installing the Codex CLI binary and running `codex login`. Reading the installed source
+turned up a second, better-supported path that the documentation does not foreground.
+
+`openai-codex` is a **first-class Hermes provider**, not merely an auth source:
+
+| Evidence | Location |
+|---|---|
+| Listed among core providers | `agent/model_metadata.py:73` |
+| Registered with a `device_code` OAuth flow | `agent/credential_persistence.py:24` |
+| Sets `api_mode = "codex_responses"` | `agent/agent_init.py:618` |
+| Live model catalogue + context lengths | `agent/model_metadata.py:2832` |
+| 401 handling and token rotation | `agent/conversation_loop.py:5110` |
+
+Critically, `codex_app_server` is a **separate** `api_mode` in that same dispatch block — so the two are
+independent, and using the provider does not require the runtime.
+
+### Why the provider wins here
+
+1. **Keeps the whole agent.** The app-server runtime disables `delegate_task`, `memory`,
+   `session_search`, and `todo` (they need `AIAgent` context). **`memory` is central to the persistent
+   assistant this project exists to build** — losing it would defeat the point.
+2. **No extra dependency.** No Codex CLI. Verified after login: `~/.codex/auth.json` does not exist,
+   yet auth works — the CLI is only needed to *import* tokens from an existing CLI login.
+3. **Simpler login.** Device-code flow: a URL and a short code entered on any device. The app-server
+   path needs `codex login`'s localhost callback, which on a headless Pi means an SSH tunnel on port 1455.
+4. **Not beta.** The app-server runtime is documented as opt-in beta.
+
+### Verification
+
+```
+$ hermes auth list
+openai-codex (1 credentials):
+  #1  openai-codex-oauth-1 oauth   device_code ←
+
+$ hermes -z "Reply with exactly: HERMES ONLINE"
+HERMES ONLINE
+
+$ hermes status
+  Model:     openai-codex/gpt-5.6-terra
+  Provider:  OpenAI Codex
+  OpenAI     ✗ (not set)          ← no API key anywhere
+```
+
+`base_url` in `~/.hermes/auth.json` (mode `0600`) is `https://chatgpt.com/backend-api/codex` — the
+subscription endpoint, **not** `api.openai.com`. Every provider API key reads "not set", which is the
+proof that nothing is billed.
+
+The app-server runtime remains available later; it is an independent config key, so adopting it would be
+a setting change rather than a rebuild.
+
+---
+
+## D7 — Model selection: terra for chat, luna for auxiliary
+
+**Phase:** 3
+**Date:** 2026-08-03
+
+Live discovery against the account (`hermes_cli.codex_models.get_codex_model_ids`) returned:
+
+```
+gpt-5.6-sol / -pro    gpt-5.6-terra / -pro    gpt-5.6-luna / -pro    gpt-5.5    gpt-5.4    gpt-5.4-mini
+```
+
+`gpt-5.3-codex` and `gpt-5.3-codex-spark` are **absent** — Spark is gated on ChatGPT Pro entitlement and
+this is a Plus account. All available slugs report **272K** context on the Codex OAuth backend, versus
+1.05M for the same slug on the paid API (`agent/model_metadata.py:433` vs `:2217`).
+
+**Main model: `gpt-5.6-terra`.** The published rates ($5/$30 sol, $2.50/$15 terra, $1/$6 luna) are not
+billed on a subscription, but they proxy how fast each burns the Plus quota — the real constraint for an
+always-on assistant. Terra is roughly half sol's burn while remaining a current-generation 5.6 model with
+full tool calling. On Plus, hitting a rolling-window wall mid-conversation is a worse failure than
+slightly weaker reasoning.
+
+**Auxiliary: `gpt-5.6-luna`** for `title_generation`, `compression`, `session_search`, and `curator`.
+These are mechanical, and their output is never shown directly, so the quality cost is negligible while
+the quota saving is real.
+
+**No model name is hardcoded in this repo.** These are values in `~/.hermes/config.yaml`, chosen from a
+live catalogue at configuration time. Re-run discovery after any subscription change — a newer series
+will simply appear.
+
+**Note the `-pro` variants** bill at the same per-token rate but consume more tokens per task (they are
+high-effort modes). They were declined for the same quota reason.
