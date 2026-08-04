@@ -1,0 +1,13 @@
+name: hermes-display-state
+description: >
+  Publishes Hermes' live activity state to a JSON file on tmpfs for the
+  hermes-pi display renderer. Observer only -- never blocks, never alters
+  agent behaviour, and never writes message content.
+events:
+  - gateway:startup
+  - session:start
+  - session:end
+  - session:reset
+  - agent:start
+  - agent:step
+  - agent:end

@@ -4,7 +4,13 @@ The single interface between Hermes and the display renderer.
 
 **Producer:** the gateway hook running in-process inside Hermes (`hermes_ext/hooks/hermes-display-state/`).
 **Consumer:** the display renderer (`display/`).
-**Location:** `/run/hermes-display/state.json` — tmpfs, mode `0700`, created by systemd `RuntimeDirectory=`.
+**Location:** `$XDG_RUNTIME_DIR/hermes-display/state.json` = `/run/user/1000/hermes-display/state.json`.
+
+Chosen over `/run/hermes-display/` (as originally sketched) because `/run` needs root or a systemd
+`RuntimeDirectory=` to create, which would have coupled the hook's ability to write to the *display*
+service's lifecycle. `XDG_RUNTIME_DIR` is already tmpfs, mode `0700`, owned by uid 1000, and present for
+any systemd user service — so the hook creates it itself with no privileges and no cross-service
+dependency.
 
 Both sides are versioned by `schema`. A renderer that sees an unknown major version renders a degraded
 "unknown state" screen rather than guessing.
