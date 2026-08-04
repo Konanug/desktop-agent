@@ -64,22 +64,37 @@ Hermes' generated unit disables systemd's start rate limiter while setting `Rest
 
 ---
 
+### 5. SSH is key-only
+Applied 2026-08-04, in this order — the order is the safety property, not a formality:
+
+1. Keypair generated **on the laptop** (`ssh-keygen -t ed25519`); the private key never touched the Pi
+2. Public key installed to `~/.ssh/authorized_keys` (`600`), `~/.ssh` (`700`)
+3. **Key login verified in a new session while the old one stayed open**, confirmed in the auth log —
+   not inferred from which prompt appeared:
+   ```
+   Accepted publickey for alanmyin from 192.168.2.89 ED25519 SHA256:E8othIIqyxCRYT…
+   Accepted publickey: 1    Accepted password: 0
+   ```
+4. Only then `PasswordAuthentication no`, validated with `sshd -t` before reload
+
+Installed key: `SHA256:E8othIIqyxCRYTkVkZcuKKugkGsUFCjHSQQLc6CXdE0` (`alanmyin-laptop`).
+
+`KbdInteractiveAuthentication no` is set alongside it. That is not redundant: with `UsePAM yes`,
+keyboard-interactive can still reach the PAM password stack even when `PasswordAuthentication no` —
+leaving the box brute-forceable while *looking* locked down.
+
+Verified by attempting a password-only login rather than trusting the config:
+```
+$ ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no alanmyin@127.0.0.1
+alanmyin@127.0.0.1: Permission denied (publickey).
+```
+
+**Losing the laptop private key locks you out.** Recovery needs a physical keyboard and monitor on the
+Pi (or pulling the SD card). If that key is ever at risk, add a second key *before* removing the first.
+
 ## Pending
 
-### SSH key-only authentication
-**Not yet applied — and the order is critical.** `~/.ssh/authorized_keys` was **empty (0 bytes)**, so
-password auth is currently the *only* way in. Disabling it first would lock the box out completely,
-recoverable only with a physical keyboard and monitor.
-
-Correct sequence:
-1. Generate a keypair **on the laptop** (`ssh-keygen -t ed25519`) — the private key must never touch the Pi
-2. Install the public key into `~/.ssh/authorized_keys` (`600`), `~/.ssh` (`700`)
-3. **Verify key login works in a brand-new session, while the current one stays open**
-4. Only then add `PasswordAuthentication no` to the `10-` drop-in
-5. `sudo sshd -t`, reload, and confirm with `sudo sshd -T | grep passwordauth`
-
-Step 3 is not optional. Keep the working session open as an escape hatch until a *new* session
-authenticates by key.
+Nothing outstanding.
 
 ---
 
