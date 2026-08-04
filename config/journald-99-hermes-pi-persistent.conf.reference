@@ -1,0 +1,15 @@
+# Reference copy of /etc/systemd/journald.conf.d/99-hermes-pi-persistent.conf
+# (installed separately; this copy is for review/diffing only)
+#
+# The 99- prefix is load-bearing. systemd merges drop-ins from /etc, /run and
+# /usr/lib by FILENAME and the LAST value wins -- the OPPOSITE of sshd_config,
+# where the first wins. Raspberry Pi OS ships
+# /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf with
+# Storage=volatile, so a 10- prefix here was silently overridden.
+[Journal]
+Storage=persistent
+SystemMaxUse=200M
+SystemMaxFileSize=20M
+MaxRetentionSec=1month
+RateLimitIntervalSec=30s
+RateLimitBurst=1000

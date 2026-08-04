@@ -1,0 +1,32 @@
+[Unit]
+Description=Detach the kernel framebuffer console from the Hermes panel
+Documentation=file:///home/alanmyin/projects/hermes-pi/docs/ARCHITECTURE.md
+
+# WHY THIS EXISTS
+# tty1's framebuffer console (vtcon1) owns /dev/fb0 alongside the renderer.
+# Observed symptom: a blinking cursor and a black console block painted over
+# the display -- the console repaints whenever it has anything to say, and the
+# cursor blinks forever at the login prompt.
+#
+# Unbinding vtcon1 hands the panel entirely to the renderer.
+#
+# Chosen over `fbcon=map:2` on the kernel cmdline because this is reversible
+# without a reboot, needs no boot-config change, and is easy to undo:
+#   echo 1 | sudo tee /sys/class/vtconsole/vtcon1/bind
+# The console remains reachable over SSH regardless; nothing about this
+# affects logging or recovery.
+
+DefaultDependencies=no
+After=sysinit.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Find the framebuffer console by NAME rather than assuming vtcon1 -- the
+# numbering is not guaranteed across kernels.
+ExecStart=/bin/sh -c 'for v in /sys/class/vtconsole/vtcon*; do grep -qi "frame buffer" "$v/name" 2>/dev/null && echo 0 > "$v/bind"; done; exit 0'
+ExecStop=/bin/sh -c 'for v in /sys/class/vtconsole/vtcon*; do grep -qi "frame buffer" "$v/name" 2>/dev/null && echo 1 > "$v/bind"; done; exit 0'
+
+[Install]
+WantedBy=multi-user.target

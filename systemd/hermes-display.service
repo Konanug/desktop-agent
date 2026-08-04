@@ -1,0 +1,44 @@
+[Unit]
+Description=Hermes Pi Display - framebuffer status renderer
+Documentation=file:///home/alanmyin/projects/hermes-pi/docs/ARCHITECTURE.md
+
+# Wants + After, deliberately NOT Requires/BindsTo.
+# The display must start even when the gateway is broken -- showing an honest
+# OFFLINE screen is its job in that case. Requires= would stop the display
+# whenever the gateway stopped, which is exactly backwards: the panel would go
+# dark at the one moment you most need it to tell you something.
+Wants=hermes-gateway.service
+After=hermes-gateway.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alanmyin/projects/hermes-pi
+ExecStart=/usr/bin/python3 -m display
+
+# Restart harder than the gateway: this process is stateless (it recovers
+# everything from state.json on tmpfs) and a frozen panel is the most visible
+# failure in the system.
+Restart=always
+RestartSec=3
+
+# Crash-loop guard. Without this a bad panel or missing /dev/fb0 would spin
+# forever at 3s intervals. Budget is looser than the gateway's because a
+# restart here is cheap and harmless.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# Paint a final SHUTDOWN frame instead of freezing mid-render.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# NOTE: MemoryMax= is deliberately absent -- it would be silently ignored.
+# The kernel cmdline carries cgroup_disable=memory, so /sys/fs/cgroup only
+# exposes cpuset/cpu/io/pids. CPU can be bounded; RAM cannot.
+CPUQuota=40%
+Nice=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
