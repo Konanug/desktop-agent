@@ -1,0 +1,28 @@
+# ── Secrets: never commit ──────────────────────────────────────────────
+*.env
+.env
+!.env.example
+auth.json
+*.token
+*.key
+*.pem
+credentials.json
+
+# ── Generated animation packs (rebuilt via `make frames`) ──────────────
+assets/anim/*.pack
+assets/anim/*.json
+
+# ── Baseline/system backups (machine-specific, may contain host detail) ─
+backup/
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ── Editor / OS ────────────────────────────────────────────────────────
+.vscode/
+*.swp
+.DS_Store
