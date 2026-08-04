@@ -293,3 +293,33 @@ hermes   /home/alanmyin/.local/bin/hermes
 codex    -
 claude   /home/alanmyin/.local/bin/claude
 ```
+
+---
+
+## SPI throughput (measured, Phase 6b)
+
+Measured with `tools/bench_spi.py` via the kernel's own counters at
+`/sys/class/spi_master/spi0/spi0.0/statistics/bytes_tx` — **not** by timing
+framebuffer writes. fbtft uses deferred I/O: an mmap write returns as soon as
+the page is dirtied and a workqueue ships it later, so timing the write
+measures memcpy. An early naive attempt here reported "2729 MB/s", roughly
+1300x the theoretical ceiling of a 16 MHz bus.
+
+### At 16 MHz (stock `tft35a` overlay)
+
+| Region | Frame | Throughput | Bus use | Effective fps | Errors |
+|---|---|---|---|---|---|
+| 480×320 full | 300 KiB | 1.474 MB/s | 73.7% | **4.8** | 0 |
+| 260×260 zone | 132 KiB | 1.427 MB/s | 71.4% | **10.6** | 0 |
+
+Throughput is essentially identical either way — the bus saturates regardless,
+so **fps is set purely by how many bytes a frame costs**. That is the entire
+justification for confining animation to a bounded region and for zone-based
+dirty tracking: they are not micro-optimisations, they are the frame rate.
+
+Bus utilisation tops out near 73%, the rest being per-transfer overhead
+(command bytes, CS transitions). `txbuflen` is 32768 and could be worth raising
+later, but one variable at a time.
+
+`errors` and `timedout` both stayed at 0 — these are the counters to watch when
+raising the clock, since intermittent corruption can escape visual inspection.
