@@ -83,6 +83,9 @@ class Style:
 CYAN = Style()
 AMBER = Style(core=(1.00, 0.70, 0.00), ring=(0.85, 0.55, 0.00), mesh=(0.55, 0.35, 0.00))
 RED = Style(core=(1.00, 0.25, 0.25), ring=(0.80, 0.15, 0.15), mesh=(0.45, 0.10, 0.10))
+# Auth failures get their own hue: a credentials problem must not look
+# like a dead process. Red = gone, amber = reconnecting, violet = auth.
+VIOLET = Style(core=(0.78, 0.35, 1.00), ring=(0.60, 0.25, 0.85), mesh=(0.35, 0.15, 0.50))
 
 
 def _radial_grid(w: int, h: int, diam: float) -> tuple[np.ndarray, np.ndarray]:
@@ -233,7 +236,7 @@ PACKS = {
                               "ring_cycles": 1, "mesh_cycles": 0,
                               "pulse_cycles": 1, "wobble_cycles": 1,
                               "tick_cycles": 0}),                                72, _FPS, True),
-    "error":        (Style(**{**RED.__dict__, "intensity": 0.95, "rings": 2,
+    "error":        (Style(**{**VIOLET.__dict__, "intensity": 0.95, "rings": 2,
                               "ring_cycles": 0, "mesh_cycles": 0,
                               "pulse_cycles": 6, "wobble_cycles": 0,
                               "tick_cycles": 0}),                                36, _FPS, True),

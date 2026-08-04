@@ -1,0 +1,231 @@
+# Runbook
+
+Operating Hermes Pi. Written to be usable when something is broken and you do
+not remember how any of this works.
+
+**Everything runs as `alanmyin`. Nothing needs root except the two system-level
+units** (`hermes-fbcon-detach`, journald config).
+
+---
+
+## Is it healthy?
+
+```bash
+systemctl --user is-active hermes-gateway hermes-display
+systemctl is-active hermes-fbcon-detach
+```
+
+All three should print `active`. Then:
+
+```bash
+# What Hermes thinks it is doing
+python3 -c "
+import json,time; d=json.load(open('/run/user/1000/hermes-display/state.json'))
+print(d['activity'], '| heartbeat %.0fs ago' % (time.time()-d['updated_at']))"
+
+# What the panel is showing, and why
+journalctl --user -u hermes-display -n 20 --no-pager -o cat | grep -- '->'
+```
+
+A heartbeat older than ~15 s means the gateway is wedged even if systemd still
+calls it active. That is exactly what the panel's RECONNECTING/OFFLINE states
+are reporting.
+
+---
+
+## Reading the panel
+
+| Panel shows | Meaning | Do |
+|---|---|---|
+| `IDLE` + slow cyan | healthy, waiting | nothing |
+| `RECEIVING` / `THINKING` / `TOOL` / `RESPONDING` | working on a message | nothing |
+| `RECONNECTING` (amber) | heartbeat 30–90 s stale | wait; if it persists, restart the gateway |
+| `OFFLINE` (red) | gateway not running, or heartbeat >90 s | `systemctl --user status hermes-gateway` |
+| `AUTH NEEDED` (red) | model auth failed or quota exhausted | re-auth, below |
+| `FAILED` (red, still) | restart limit tripped — **needs a human** | `reset-failed`, below |
+| `STALLED` (amber) | activity stuck >120 s; a lost `agent:end` | usually self-clears; restart if not |
+| `--:--` for the clock | NTP has not synced yet (~34 s after boot) | wait |
+
+`FAILED` is deliberately distinct: systemd has **given up**, and nothing will
+restart the gateway until you intervene.
+
+---
+
+## Common tasks
+
+### Restart something
+```bash
+systemctl --user restart hermes-gateway    # Discord + agent
+systemctl --user restart hermes-display    # panel only; Discord unaffected
+```
+Restarting the display never affects Discord. Restarting the gateway makes the
+panel show OFFLINE for a few seconds — that is correct behaviour, not a fault.
+
+### Clear a `FAILED` state
+```bash
+systemctl --user reset-failed hermes-gateway
+systemctl --user start hermes-gateway
+```
+Then find out *why* before walking away:
+```bash
+journalctl --user -u hermes-gateway -n 100 --no-pager | grep -iE 'error|traceback|fatal'
+```
+
+### Logs
+```bash
+journalctl --user -u hermes-gateway -f          # live
+journalctl --user -u hermes-display -f
+hermes logs                                     # Hermes' own view
+tail -f ~/.hermes/logs/errors.log
+```
+Journald is persistent (200 MB cap, 1 month), so logs survive reboots.
+
+### Re-authenticate the model (`AUTH NEEDED`)
+ChatGPT OAuth tokens normally refresh themselves. When they do not:
+```bash
+hermes auth status openai-codex
+hermes auth add openai-codex --type oauth --no-browser
+```
+Device-code flow: it prints a URL and a code to enter on any browser. **No SSH
+tunnel required** — that is why the provider was chosen over the Codex
+app-server runtime (docs/DECISIONS.md D6).
+
+If it is quota rather than auth, nothing is broken; the Plus window has to
+reset. `gpt-5.6-terra` was chosen partly to make that rarer (D7).
+
+### Change the model
+```bash
+hermes config get model.default
+hermes config set model.default openai-codex/gpt-5.6-sol
+systemctl --user restart hermes-gateway
+```
+Do not hardcode a slug from memory — list what the account actually offers:
+```bash
+cd ~/.hermes/hermes-agent && ./venv/bin/python -c "
+import json,sys; sys.path.insert(0,'.')
+from hermes_cli.codex_models import get_codex_model_ids
+print(get_codex_model_ids(access_token=json.load(open('$HOME/.hermes/auth.json'))
+      ['credential_pool']['openai-codex'][0]['access_token']))"
+```
+
+### Rotate the Discord bot token
+1. Discord Developer Portal → your app → Bot → **Reset Token**
+2. `nano ~/.hermes/.env`, replace `DISCORD_BOT_TOKEN=`
+3. `systemctl --user restart hermes-gateway`
+
+Do this immediately if the token is ever exposed: **with the terminal toolset
+enabled it is equivalent to shell access.**
+
+### Update Hermes
+```bash
+hermes update
+~/projects/hermes-pi/scripts/install-hermes-ext.sh   # re-link hook + plugin
+systemctl --user daemon-reload
+systemctl --user restart hermes-gateway
+hermes doctor
+```
+Then re-check the things updates can quietly undo:
+```bash
+systemctl --user show hermes-gateway -p StartLimitBurst   # expect 10
+hermes plugins list | grep hermes_display                 # expect enabled
+sudo sshd -T | grep -E 'passwordauth|permitrootlogin'     # expect no / no
+```
+
+### Change the visual
+```bash
+cd ~/projects/hermes-pi
+$EDITOR tools/render_frames.py          # PACKS at the bottom
+python3 tools/render_frames.py --out assets/anim   # ~90 s
+python3 tests/test_anim_seam.py         # MUST pass -- see below
+systemctl --user restart hermes-display
+```
+
+**Every animated term must use INTEGER cycles per loop.** A float multiplier
+leaves a remainder at the wrap and the rings visibly snap back a few degrees,
+once per loop, forever. `test_anim_seam.py` catches exactly this.
+
+### Run the tests
+```bash
+cd ~/projects/hermes-pi
+python3 tests/test_states.py         # panel cannot claim Hermes is healthy when it is not
+python3 tests/test_anim_seam.py      # animation loops close exactly
+python3 tests/test_display_tools.py  # hostile images and URLs are refused
+```
+
+---
+
+## Panel problems
+
+### Blank
+```bash
+systemctl --user status hermes-display
+ls -l /dev/fb0 && id -nG | tr ' ' '\n' | grep -x video   # need the video group
+sudo fuser -v /dev/fb0                                   # who else has it?
+```
+
+### A blinking cursor or console text on the panel
+The framebuffer console has re-attached:
+```bash
+systemctl status hermes-fbcon-detach
+sudo systemctl restart hermes-fbcon-detach
+```
+
+### Choppy or torn animation
+```bash
+cat /sys/class/spi_master/spi0/spi0.0/statistics/errors    # expect 0
+cat /sys/class/spi_master/spi0/spi0.0/statistics/timedout  # expect 0
+python3 tools/bench_spi.py --seconds 10
+```
+Non-zero counters at 32 MHz mean the overclock is unstable. Roll back:
+```bash
+sudo cp /boot/firmware/config.txt.pre32mhz /boot/firmware/config.txt
+sudo reboot
+```
+Then set `_FPS = 6` in `tools/render_frames.py`, regenerate, and lower `fps` in
+`assets/anim/*.json`.
+
+### Everything is slow / low frame rate
+Frame rate is set by **dirty rows**, not width — fbtft is row-granular
+(docs/HARDWARE.md). Shorten `HEIGHT` in `tools/render_frames.py`; widening or
+narrowing does nothing.
+
+---
+
+## Replacing the panel
+
+Only `display/panel.py` is hardware-specific. For a different SPI TFT:
+
+1. Update `dtoverlay=` in `/boot/firmware/config.txt`, reboot
+2. `python3 -c "import sys;sys.path.insert(0,'.');from display.panel import discover;print(discover())"`
+3. If it is not 16 bpp, extend `pack_rgb565()`
+4. Set `WIDTH`/`HEIGHT` in `tools/render_frames.py` to the new geometry, regenerate
+5. `python3 tools/bench_spi.py` to find the new fps ceiling; set pack `fps` to match
+
+Geometry is read from sysfs at runtime, so the renderer adapts to resolution
+changes on its own.
+
+---
+
+## Recovering from a power cut
+
+Nothing to do. Lingering is enabled, so both user services start at boot with
+no login. Verified: the gateway came up **7 s after boot** unattended.
+
+Afterwards, sanity-check the SD card and power:
+```bash
+vcgencmd get_throttled     # 0x0 expected; 0x50000 means under-voltage occurred
+sudo dmesg | grep -iE 'ext4|I/O error'
+```
+
+---
+
+## If you are locked out of SSH
+
+Password auth is **disabled**. The laptop private key is the only way in.
+
+Recovery needs physical access: keyboard and monitor on the Pi (the console is
+detached from the small panel, so use HDMI), or pull the SD card and edit
+`authorized_keys` from another machine.
+
+**Before it matters:** add a second key from another device, so one lost laptop
+is not a lockout.

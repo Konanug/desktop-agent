@@ -33,6 +33,7 @@ WHITE = (230, 240, 245)
 GREY = (110, 130, 140)
 AMBER = (255, 179, 0)
 RED = (255, 60, 60)
+VIOLET = (200, 90, 255)   # auth/credentials -- deliberately NOT red
 GREEN = (60, 220, 120)
 BLACK = (0, 0, 0)
 
@@ -50,7 +51,7 @@ _LABEL: dict[Screen, tuple[str, tuple[int, int, int]]] = {
     Screen.TEXT_CARD:      ("MESSAGE",      CYAN),
     Screen.RECONNECTING:   ("RECONNECTING", AMBER),
     Screen.HERMES_OFFLINE: ("OFFLINE",      RED),
-    Screen.AUTH_ERROR:     ("AUTH NEEDED",  RED),
+    Screen.AUTH_ERROR:     ("AUTH NEEDED",  VIOLET),
     Screen.STALLED:        ("STALLED",      AMBER),
     Screen.FAILED:         ("FAILED",       RED),
     Screen.SHUTDOWN:       ("SHUTTING DOWN", DIM),
