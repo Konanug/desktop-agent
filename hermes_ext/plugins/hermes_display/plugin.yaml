@@ -1,0 +1,10 @@
+name: hermes_display
+version: 1.0.0
+description: >
+  Lets Hermes put things on the Pi's physical panel. Registers display_show_image
+  and display_show_text so the agent can deliberately choose to show something,
+  rather than the display scraping message text.
+provides_tools:
+  - display_clear
+  - display_show_image
+  - display_show_text

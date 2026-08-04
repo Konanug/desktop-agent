@@ -24,7 +24,7 @@ from .panel import Framebuffer, discover
 from .player import Player
 from .render import Renderer
 from .states import Resolved, Screen, StateMachine
-from .watcher import StateWatcher
+from .watcher import RequestWatcher, StateWatcher, default_request_path
 
 # Loop period. Must be shorter than the fastest animation frame interval
 # (12 fps = 83ms) or the player can never reach its target rate. A stat(2) per
@@ -52,6 +52,46 @@ _PACK_FOR = {
 }
 
 
+def show_image(fb, renderer, resolved, request) -> None:
+    """Blit a plugin-prepared image, or render a text card.
+
+    The bytes were validated, decoded and re-encoded to raw RGB565 by the
+    plugin inside Hermes. This process never decodes untrusted input -- it
+    only accepts a file of exactly the expected length, from a directory it
+    controls. A malformed or hostile image cannot reach the framebuffer owner.
+    """
+    import numpy as np
+
+    body_y = renderer.header.h
+    body_h = renderer.footer.y - body_y
+
+    if resolved.screen == Screen.TEXT_CARD:
+        renderer.draw_body(resolved)
+        return
+
+    name = (request or {}).get("image")
+    w = int((request or {}).get("w") or 0)
+    h = int((request or {}).get("h") or 0)
+    if not name or not w or not h:
+        renderer.draw_body(resolved)
+        return
+
+    path = default_request_path().parent / "images" / str(name)
+    try:
+        # Basename only, resolved under our own spool: no traversal, no
+        # following a path the model chose.
+        if path.name != str(name) or not path.is_file():
+            raise FileNotFoundError(name)
+        raw = path.read_bytes()
+        if len(raw) != w * h * 2:
+            raise ValueError(f"expected {w*h*2} bytes, got {len(raw)}")
+        arr = np.frombuffer(raw, dtype="<u2").reshape(h, w)
+        fb.blit_packed(arr, 0, body_y + max(0, (body_h - h) // 2))
+    except Exception as e:
+        print(f"[display] image unusable: {e}", flush=True)
+        renderer.draw_body(resolved)
+
+
 def _handle_signal(signum, _frame):
     global _stop
     _stop = True
@@ -75,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
           f"stride={info.stride} padded={info.padded}", flush=True)
 
     watcher = StateWatcher()
+    requests = RequestWatcher()
     probe = HealthProbe(unit=args.unit)
     machine = StateMachine()
 
@@ -90,8 +131,9 @@ def main(argv: list[str] | None = None) -> int:
         renderer.invalidate()
 
         state, _ = watcher.poll()
+        request, _ = requests.poll()
         health = probe.get()
-        resolved = machine.update(state, health)
+        resolved = machine.update(state, health, request=request)
         renderer.draw(resolved, state, health)
 
         if args.once:
@@ -103,13 +145,24 @@ def main(argv: list[str] | None = None) -> int:
         while not _stop:
             now = time.time()
             state, changed = watcher.poll()
+            request, req_changed = requests.poll()
             health = probe.get(now)
 
-            resolved = machine.update(state, health, now)
+            resolved = machine.update(state, health, now, request=request)
             machine.tick(now)
             resolved = machine.current
 
-            pack_name = _PACK_FOR.get(resolved.screen) if animate else None
+            if resolved.screen in (Screen.IMAGE, Screen.TEXT_CARD):
+                if req_changed or last_screen != resolved.screen:
+                    renderer.invalidate()
+                    show_image(fb, renderer, resolved, request)
+                renderer.draw_chrome(resolved, state, health, now)
+                # Force a fresh animation frame when the request expires,
+                # rather than resuming mid-loop over a stale image.
+                player.select("", now)
+                pack_name = None
+            else:
+                pack_name = _PACK_FOR.get(resolved.screen) if animate else None
             if pack_name:
                 renderer.draw_chrome(resolved, state, health, now)
                 if player.select(pack_name, now):

@@ -88,7 +88,8 @@ class StateMachine:
     def current(self) -> Resolved:
         return self._current
 
-    def _raw(self, state: dict[str, Any] | None, health: Health, now: float) -> Resolved:
+    def _raw(self, state: dict[str, Any] | None, health: Health, now: float,
+             request: dict[str, Any] | None = None) -> Resolved:
         # 1. A failed unit is terminal and outranks everything, including a
         #    state file that still claims all is well.
         if health.unit_failed:
@@ -112,14 +113,16 @@ class StateMachine:
         if state.get("model_state") == "error":
             return Resolved(Screen.AUTH_ERROR, detail=str(state.get("model_detail") or "model error"))
 
-        # Phase 8 overrides normal activity while a request is live.
-        disp = state.get("display") or {}
-        mode, expires = disp.get("mode"), disp.get("expires_at")
-        if mode in ("image", "text") and (expires is None or now < float(expires)):
-            return Resolved(
-                Screen.IMAGE if mode == "image" else Screen.TEXT_CARD,
-                detail=str(disp.get("image") or disp.get("text") or ""),
-            )
+        # A live display request overrides normal activity. Checked AFTER the
+        # fault cases above, so an image can never mask Hermes being down.
+        if request:
+            mode = request.get("mode")
+            expires = request.get("expires_at")
+            if mode in ("image", "text") and (expires is None or now < float(expires)):
+                return Resolved(
+                    Screen.IMAGE if mode == "image" else Screen.TEXT_CARD,
+                    detail=str(request.get("image") or request.get("text") or ""),
+                )
 
         activity = str(state.get("activity") or "idle")
         screen = _ACTIVITY.get(activity, Screen.IDLE)
@@ -137,10 +140,11 @@ class StateMachine:
             iteration=state.get("iteration") if isinstance(state.get("iteration"), int) else None,
         )
 
-    def update(self, state: dict[str, Any] | None, health: Health, now: float | None = None) -> Resolved:
+    def update(self, state: dict[str, Any] | None, health: Health, now: float | None = None,
+               request: dict[str, Any] | None = None) -> Resolved:
         """Fold new observations into the current screen, applying dwell."""
         now = now or time.time()
-        target = self._raw(state, health, now)
+        target = self._raw(state, health, now, request)
 
         if target.screen == self._current.screen:
             # Same screen: refresh detail fields in place, keep `since` so

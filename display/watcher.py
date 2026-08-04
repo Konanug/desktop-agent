@@ -21,9 +21,22 @@ from typing import Any
 SCHEMA_MAJOR = 1
 
 
-def default_state_path() -> Path:
+def _runtime_dir() -> Path:
     base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    return Path(base) / "hermes-display" / "state.json"
+    return Path(base) / "hermes-display"
+
+
+def default_state_path() -> Path:
+    return _runtime_dir() / "state.json"
+
+
+def default_request_path() -> Path:
+    """Display requests from the hermes_display plugin.
+
+    Deliberately a SEPARATE file from state.json: the gateway hook rewrites
+    state.json wholesale from memory, so a second writer would clobber it.
+    """
+    return _runtime_dir() / "request.json"
 
 
 class StateWatcher:
@@ -73,3 +86,14 @@ class StateWatcher:
                 self._warned = True
             self._cached = None
             return None, True
+
+
+class RequestWatcher(StateWatcher):
+    """Same polling contract, pointed at request.json.
+
+    Inherits the total-tolerance reading: any error yields None and the
+    renderer simply carries on with normal status.
+    """
+
+    def __init__(self, path: Path | None = None):
+        super().__init__(path or default_request_path())
