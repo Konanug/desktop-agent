@@ -323,3 +323,39 @@ later, but one variable at a time.
 
 `errors` and `timedout` both stayed at 0 — these are the counters to watch when
 raising the clock, since intermittent corruption can escape visual inspection.
+
+### fbtft is ROW-granular, not rectangle-granular (important)
+
+Measured by blitting different shapes and reading `bytes_tx`:
+
+| Blit | Logical size | Actually transmitted |
+|---|---|---|
+| 240×240 centred | 112.5 KiB | **228.8 KiB** |
+| 480×240 full width | 225.0 KiB | 211.6 KiB |
+| 240×120 half height | 56.2 KiB | 64.2 KiB |
+
+Same height at **double the width costs the same** (ratio 1.00×). fbtft's
+deferred I/O tracks dirty *pages* of a row-major framebuffer, so touching any
+pixel in a row dirties that row's full 960-byte span. A narrow rectangle
+transmits its whole 480-px rows regardless.
+
+**Consequences, and they are not subtle:**
+
+1. **Horizontal width is free.** A 240-wide visual costs exactly what a
+   480-wide one does. Narrowing to "save bandwidth" saves nothing.
+2. **Only row count buys speed.** Halving the height halves the cost; halving
+   the width does nothing.
+3. An earlier "12.5 fps" figure here was wrong — it divided by a 112.5 KiB
+   frame cost that does not exist. The real rate was ~6.3 fps.
+
+The animation is therefore **full width (480) with bounded height (232 rows)**,
+spending the free horizontal space on peripheral detail.
+
+### Measured in production (16 MHz, 480×232 animation)
+
+```
+1.419 MB/s · 6.4 fps · 71% bus · 0 errors · 4.0% CPU · 47 MB RSS
+```
+
+232 rows × 480 px × 2 B = 217.5 KiB per frame. At 32 MHz this should reach
+~13 fps for the same frames.

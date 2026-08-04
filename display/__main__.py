@@ -17,16 +17,39 @@ import signal
 import sys
 import time
 
+from pathlib import Path
+
 from .health import HealthProbe
 from .panel import Framebuffer, discover
+from .player import Player
 from .render import Renderer
 from .states import Resolved, Screen, StateMachine
 from .watcher import StateWatcher
 
-POLL = 0.1          # state-file poll; a stat(2) is essentially free
+# Loop period. Must be shorter than the fastest animation frame interval
+# (12 fps = 83ms) or the player can never reach its target rate. A stat(2) per
+# iteration costs microseconds, so 30 Hz is affordable; measured idle CPU stays
+# low because an unchanged frame is skipped rather than re-blitted.
+POLL = 0.03
 TICK_LOG = 300.0    # periodic instrumentation line into the journal
 
 _stop = False
+
+# Screen -> animation pack. Screens absent here (STARTUP, IMAGE, TEXT_CARD)
+# fall back to the text body, which is correct: those are not "Hermes is
+# doing something" states.
+_PACK_FOR = {
+    Screen.IDLE: "idle",
+    Screen.RECEIVING: "receiving",
+    Screen.THINKING: "thinking",
+    Screen.TOOL_USE: "tool_use",
+    Screen.RESPONDING: "responding",
+    Screen.RECONNECTING: "reconnecting",
+    Screen.HERMES_OFFLINE: "offline",
+    Screen.STALLED: "reconnecting",
+    Screen.AUTH_ERROR: "error",
+    Screen.FAILED: "error",
+}
 
 
 def _handle_signal(signum, _frame):
@@ -39,6 +62,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fb", default="fb0")
     ap.add_argument("--unit", default="hermes-gateway.service")
     ap.add_argument("--once", action="store_true", help="render one frame and exit (for testing)")
+    ap.add_argument("--packs", default=str(Path(__file__).resolve().parent.parent / "assets" / "anim"),
+                    help="animation pack directory; falls back to text screens if absent")
+    ap.add_argument("--no-anim", action="store_true", help="force the text-only screens")
     args = ap.parse_args(argv)
 
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -54,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
 
     with Framebuffer(info) as fb:
         renderer = Renderer(fb, info.width, info.height)
+        player = Player(Path(args.packs))
+        animate = (not args.no_anim) and player.available()
+        print(f"[display] animation: {'on' if animate else 'off (text screens)'} "
+              f"({args.packs})", flush=True)
         # Claim the whole panel: clears whatever was left by the console, a
         # previous run, or a crash mid-frame.
         fb.fill((0, 0, 0))
@@ -79,7 +109,28 @@ def main(argv: list[str] | None = None) -> int:
             machine.tick(now)
             resolved = machine.current
 
-            renderer.draw(resolved, state, health, now)
+            pack_name = _PACK_FOR.get(resolved.screen) if animate else None
+            if pack_name:
+                renderer.draw_chrome(resolved, state, health, now)
+                if player.select(pack_name, now):
+                    # New pack: clear the body once so a smaller frame cannot
+                    # leave the previous animation's edges on screen.
+                    renderer.invalidate()
+                    renderer.draw_chrome(resolved, state, health, now)
+                pk = player.current
+                if pk is not None:
+                    ox, oy = pk.origin
+                    due = player.due(now)
+                    if due is not None:
+                        frame, _ = due
+                        fb.blit_packed(frame, ox, oy)
+                    # Label sits just under the animation. Its own zone hash
+                    # means a 12 fps visual does not repaint static text.
+                    top = min(oy + pk.h + 2, renderer.footer.y - 18)
+                    renderer.draw_label_strip(
+                        resolved, top=top, height=max(16, renderer.footer.y - top))
+            else:
+                renderer.draw(resolved, state, health, now)
 
             if resolved.screen != last_screen:
                 # Log transitions, never content -- same privacy rule as the
@@ -97,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
 
         # Leave the panel in an honest final state rather than frozen mid-frame.
         print("[display] SIGTERM -> shutdown screen", flush=True)
+        player.close()
+        fb.fill((0, 0, 0))
         renderer.invalidate()
         renderer.draw(Resolved(Screen.SHUTDOWN, since=time.time()), state, health)
         return 0

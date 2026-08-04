@@ -1,8 +1,12 @@
 """Draws screens and pushes only what changed.
 
-Phase 6 is deliberately text-only -- no animation, no artwork. The goal is a
-panel that is never *wrong*, which has to be true before it is made pretty.
-Phase 7 replaces the body zone with pre-rendered RGB565 animation packs.
+Chrome (header/footer/label) is drawn here with Pillow. The body is owned by
+display.player, which blits pre-rendered RGB565 frames straight into the
+framebuffer -- text and animation are deliberately separate so a 12 fps visual
+does not drag a text repaint along with it.
+
+If no animation packs are installed, draw_body() renders the Phase 6 text
+screens instead, so the panel still works.
 
 DIRTY TRACKING
 The panel is split into three horizontal zones (header / body / footer). Each
@@ -71,9 +75,11 @@ class Renderer:
     def __init__(self, fb, width: int, height: int):
         self.fb = fb
         self.w, self.h = width, height
-        self.header = Zone(0, 30)
-        self.footer = Zone(height - 34, 34)
+        self.header = Zone(0, 26)
+        self.footer = Zone(height - 30, 30)
         self.body = Zone(self.header.h, self.footer.y - self.header.h)
+        # Set properly by draw_label_strip once the pack geometry is known.
+        self.label = Zone(self.footer.y - 22, 22)
 
         self.f_small = _font("DejaVuSans.ttf", 13)
         self.f_mid = _font("DejaVuSans-Bold.ttf", 17)
@@ -121,24 +127,40 @@ class Renderer:
         d.line((0, self.header.h - 1, self.w, self.header.h - 1), fill=DIM)
         return self._flush(self.header, img)
 
+    def _subtitle(self, r: Resolved) -> str:
+        if r.screen == Screen.TOOL_USE and r.tool:
+            return r.tool if r.iteration is None else f"{r.tool}  ·  step {r.iteration}"
+        if r.screen == Screen.THINKING and r.iteration:
+            return f"step {r.iteration}"
+        return r.detail or ""
+
     def draw_body(self, r: Resolved) -> int:
+        """Text-only body. Used when no animation packs are installed."""
         img = Image.new("RGB", (self.w, self.body.h), BLACK)
         d = ImageDraw.Draw(img)
         label, accent = _LABEL.get(r.screen, (r.screen.value.upper(), CYAN))
-
         self._centre(d, self.body.h // 2 - 34, label, self.f_big, accent, self.w)
-
-        sub = ""
-        if r.screen == Screen.TOOL_USE and r.tool:
-            sub = r.tool if r.iteration is None else f"{r.tool}  ·  step {r.iteration}"
-        elif r.screen == Screen.THINKING and r.iteration:
-            sub = f"step {r.iteration}"
-        elif r.detail:
-            sub = r.detail
+        sub = self._subtitle(r)
         if sub:
             self._centre(d, self.body.h // 2 + 8, sub[:44], self.f_small, GREY, self.w)
-
         return self._flush(self.body, img)
+
+    def draw_label_strip(self, r: Resolved, top: int, height: int) -> int:
+        """State label beneath the animation.
+
+        A separate zone with its own hash, so a spinning animation does not
+        drag a text repaint along with it every frame -- the label is static
+        for seconds at a time while the visual runs at 12 fps.
+        """
+        if self.label.y != top or self.label.h != height:
+            self.label = Zone(top, height)
+        img = Image.new("RGB", (self.w, height), BLACK)
+        d = ImageDraw.Draw(img)
+        label, accent = _LABEL.get(r.screen, (r.screen.value.upper(), CYAN))
+        sub = self._subtitle(r)
+        text = f"{label}   {sub[:30]}" if sub else label
+        self._centre(d, max(0, (height - 15) // 2), text, self.f_small, accent, self.w)
+        return self._flush(self.label, img)
 
     def draw_footer(self, r: Resolved, state: dict | None, health, now: float) -> int:
         img = Image.new("RGB", (self.w, self.footer.h), BLACK)
@@ -166,6 +188,12 @@ class Renderer:
 
         return self._flush(self.footer, img)
 
+    def draw_chrome(self, r: Resolved, state: dict | None, health, now: float | None = None) -> int:
+        """Header + footer only; the body is the animation's."""
+        now = now or time.time()
+        return (self.draw_header(r, health.clock_synced, now)
+                + self.draw_footer(r, state, health, now))
+
     def draw(self, r: Resolved, state: dict | None, health, now: float | None = None) -> int:
         now = now or time.time()
         n = self.draw_header(r, health.clock_synced, now)
@@ -175,4 +203,4 @@ class Renderer:
 
     def invalidate(self) -> None:
         """Force a full repaint on the next draw (used after startup/resume)."""
-        self.header._hash = self.body._hash = self.footer._hash = 0
+        self.header._hash = self.body._hash = self.footer._hash = self.label._hash = 0
