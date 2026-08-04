@@ -93,8 +93,12 @@ probe() {
     probe "user lingering"      ls -la /var/lib/systemd/linger/
     probe "user groups"         id
     probe "Python"              python3 --version
-    probe "Toolchain on PATH"   sh -c "command -v git curl xz gcc g++ make node npm hermes codex claude || true"
-    probe "PATH"                sh -c 'echo "$PATH"'
+    # Probe a LOGIN shell, not this script's shell. Hermes and Claude both
+    # install to ~/.local/bin, which only lands on PATH via ~/.profile — and
+    # only when no ~/.bash_profile shadows it. This is the check that catches
+    # that class of breakage, so it must go through `bash -l`.
+    probe "PATH (login shell)"  bash -lc 'echo "$PATH"'
+    probe "Tools on login PATH" bash -lc 'for t in git curl xz gcc make node npm python3 hermes codex claude; do printf "%-8s %s\n" "$t" "$(command -v "$t" || echo -)"; done'
 } > "$REPORT"
 
 echo
