@@ -210,7 +210,7 @@ def write_pack(out: Path, name: str, frames: np.ndarray, fps: int, loop: bool,
 # than faster. Frame counts are generous because more frames means a smaller
 # angular step per frame -- the main lever on perceived smoothness once fps is
 # fixed by hardware.
-_FPS = 6          # 16 MHz ceiling. Raise to ~12 after the 32 MHz change.
+_FPS = 12         # measured ceiling for 232 rows at 32 MHz (was 6 at 16 MHz).
 
 PACKS = {
     #  name          style                                                    frames fps   loop

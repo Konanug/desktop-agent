@@ -357,5 +357,28 @@ spending the free horizontal space on peripheral detail.
 1.419 MB/s · 6.4 fps · 71% bus · 0 errors · 4.0% CPU · 47 MB RSS
 ```
 
-232 rows × 480 px × 2 B = 217.5 KiB per frame. At 32 MHz this should reach
-~13 fps for the same frames.
+232 rows × 480 px × 2 B = 217.5 KiB per frame.
+
+### After raising the clock to 32 MHz
+
+`dtoverlay=tft35a:rotate=90,speed=32000000,fps=60` → driver confirms
+`fb_ili9486 frame buffer, 480x320, fps=62, spi0.0 at 32 MHz`.
+
+| | 16 MHz | 32 MHz |
+|---|---|---|
+| Throughput | 1.419 MB/s | **2.573 MB/s** |
+| Animation | 6.4 fps | **11.6 fps** |
+| Bus usage | 71% | 64% |
+| Renderer CPU | 4.0% | **2.9%** |
+| SPI errors | 0 | 0 |
+
+**A gotcha worth remembering:** immediately after the reboot throughput barely
+moved (1.525 MB/s, 38% bus). The bus was faster but the *packs were still
+capped at fps=6* from the 16 MHz measurement, so nothing asked for the extra
+capacity. Raising the clock does nothing on its own — the pack `fps` in the
+sidecar JSON has to be raised to match. That is metadata only, so it costs a
+file edit rather than a re-render.
+
+CPU went **down** despite nearly double the frame rate: at 6 fps the loop spent
+more iterations discovering no frame was due, whereas at 12 fps more of its
+30 Hz ticks do useful work.
