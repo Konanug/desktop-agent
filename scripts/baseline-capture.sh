@@ -37,13 +37,16 @@ backup_file "$HOME/.bashrc"
 
 # ── 2. Write the hardware/system report ────────────────────────────────
 # Wrap each probe so a missing tool never aborts the capture.
-# `sed -e '$a\'` appends a trailing newline when the source lacks one — several
-# /proc/device-tree values are NUL-terminated with no newline, which would
-# otherwise swallow the closing code fence onto the same line.
+#
+# /proc/device-tree values are NUL-terminated and lack a trailing newline, so
+# two cleanups are needed for the report to stay valid, diffable Markdown:
+#   tr -d '\0'   strips NULs, which would otherwise make git treat the whole
+#                report as a binary blob and refuse to diff it
+#   sed -e '$a\' appends a final newline, so the closing fence gets its own line
 probe() {
     echo; echo "### $1"; echo '```'
     shift
-    { "$@" 2>&1 || echo "(probe failed)"; } | sed -e '$a\'
+    { "$@" 2>&1 || echo "(probe failed)"; } | tr -d '\0' | sed -e '$a\'
     echo '```'
 }
 
