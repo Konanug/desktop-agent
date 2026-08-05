@@ -163,12 +163,60 @@ def _human(n: int) -> str:
     return f"{n/1_000_000:.2f}M" if n >= 1_000_000 else f"{n/1000:.0f}k"
 
 
+def calibrate(percent: float) -> int:
+    """Derive the budget from a real /usage reading.
+
+    THE HONEST WAY TO GET A DENOMINATOR. This machine can measure tokens it
+    saw locally, but not the server-side limit -- that is weighted in ways not
+    published and counts every device you use. There is no API to ask, and
+    /usage exists only inside an interactive session.
+
+    So: you read the real percentage off /usage, and we solve for the budget
+    that makes our local count agree with it. The result is still an estimate,
+    but every input is real -- your observation and our measurement -- rather
+    than a number someone made up.
+
+    It drifts, for reasons worth knowing: work done on other devices is
+    invisible here, and the server's weighting is not ours. Recalibrate when it
+    stops matching. That it needs recalibrating is the honest signal that this
+    is an approximation, not a reading.
+    """
+    if not 0 < percent <= 100:
+        print("percent must be between 0 and 100")
+        return 2
+    doc = collect()
+    local = doc["billable_tokens"]
+    if local <= 0:
+        print("no local usage recorded in this window yet -- nothing to calibrate from")
+        return 1
+    budget = int(local / (percent / 100.0))
+    BUDGET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    BUDGET_FILE.write_text(json.dumps({
+        "window_tokens": budget,
+        "calibrated_at": time.time(),
+        "calibrated_from_percent": percent,
+        "local_tokens_at_calibration": local,
+    }, indent=2))
+    print(f"measured locally : {local:,} tokens")
+    print(f"you reported     : {percent:.0f}% of the session limit")
+    print(f"=> budget set to : {budget:,} tokens  ({BUDGET_FILE})")
+    print("\nThe panel bar will now track that. Recalibrate whenever it drifts --")
+    print("usage from other devices is invisible here, so it will.")
+    publish(collect())
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--calibrate", type=float, metavar="PERCENT",
+                    help="set the budget from a real /usage percentage")
     ap.add_argument("--write", action="store_true", help="publish usage.json")
     ap.add_argument("--loop", type=float, default=0,
                     help="publish every N seconds and keep running")
     args = ap.parse_args()
+
+    if args.calibrate is not None:
+        return calibrate(args.calibrate)
 
     while True:
         t0 = time.time()

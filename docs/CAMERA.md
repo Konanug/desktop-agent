@@ -105,6 +105,26 @@ to fixed landscape dimensions (it squashes), and the panel preview is a
 letterboxed vertical strip because the camera's natural view genuinely is
 portrait. `HERMES_CAMERA_ROTATE` changes it if the module is remounted.
 
+**4b. The BGR swap is REAL, and here is the proof, because it will be doubted.**
+Same scene, three ways, mean channel values:
+
+```
+picamera2 capture_image() (its own PIL path, true RGB)   R 113.5  G 108.1  B 105.4
+ours, after frame[..., ::-1]                             R 113.5  G 108.2  B 105.4
+raw capture_array(), no swap                             R 105.4  G 108.2  B 113.5
+```
+
+Mean absolute difference against truth: **0.512 ours, 10.279 unswapped**.
+
+A project that feeds the array to **cv2** needs NO swap, because cv2.imencode
+expects BGR -- that is not a contradiction, it is the same fact seen from the
+other side. We use PIL, which expects RGB, so we must swap. Check which library
+consumes the array before concluding anything.
+
+Verify colour on a COLOURED scene. A grey desk is invariant under a red/blue
+swap, so a neutral test proves nothing -- an early check here "passed" on a
+grey scene while the bug was still present.
+
 **5. Wait on `AfState`, do not sleep a guess.** An earlier version slept a flat
 1.5 s after `start()` and that number then got quoted as if it were measured.
 Polling `capture_metadata()["AfState"]` until `Focused` takes **406 ms**, and

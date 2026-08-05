@@ -58,6 +58,27 @@ _LABEL: dict[Screen, tuple[str, tuple[int, int, int]]] = {
 }
 
 
+def _usage_text(usage: dict | None) -> str:
+    """Tokens seen locally, and when the window rolls over.
+
+    Deliberately NOT a percentage unless a budget exists. These two figures are
+    measurements; a percentage would be a claim about a limit this machine
+    cannot see.
+    """
+    if not usage:
+        return ""
+    tok = int(usage.get("billable_tokens") or 0)
+    tok_s = f"{tok/1_000_000:.1f}M" if tok >= 1_000_000 else f"{tok/1000:.0f}k"
+    parts = [tok_s]
+    frac = usage.get("fraction_used")
+    if frac is not None:
+        parts.append(f"{int(frac*100)}%")
+    resets = usage.get("window_resets_in")
+    if resets:
+        parts.append(f"{resets/3600:.1f}h")
+    return " \u00b7 ".join(parts)
+
+
 def _font(name: str, size: int) -> ImageFont.FreeTypeFont:
     try:
         return ImageFont.truetype(f"{FONT_DIR}/{name}", size)
@@ -215,17 +236,23 @@ class Renderer:
             return ""
 
         frac = usage.get("fraction_used")
-        against_budget = frac is not None
-        if not against_budget:
-            frac = usage.get("window_fraction") or 0.0
+        if frac is None:
+            # NO BAR WITHOUT A BUDGET.
+            #
+            # This used to fall back to drawing how far through the 5-hour
+            # window we are. That is a real number, but it is not the number
+            # anyone reads off a meter in this position: the bar sat at ~45%
+            # while Claude's own /usage said 90%, and the obvious conclusion
+            # was that the meter was broken rather than that it was measuring
+            # something else entirely. A bar that is honest in the source and
+            # misleading on the glass is just misleading.
+            #
+            # Tokens and reset time still appear as text, where they are
+            # labelled and cannot be mistaken for a proportion.
+            d.line((0, 0, self.w, 0), fill=DIM)
+            return _usage_text(usage)
 
-        # Colour carries meaning only when it is measuring the budget. Window
-        # progress is not a warning about anything, so it stays dim.
-        if against_budget:
-            colour = RED if frac >= 0.9 else AMBER if frac >= 0.75 else CYAN
-        else:
-            colour = DIM
-
+        colour = RED if frac >= 0.9 else AMBER if frac >= 0.75 else CYAN
         seg_w, gap = 9, 3
         n = max(1, (x1 - x0 + gap) // (seg_w + gap))
         lit = int(round(min(1.0, max(0.0, float(frac))) * n))
@@ -234,15 +261,7 @@ class Renderer:
             d.rectangle((sx, top, sx + seg_w - 1, top + h - 1),
                         fill=colour if i < lit else (0, 28, 34))
 
-        tok = int(usage.get("billable_tokens") or 0)
-        tok_s = f"{tok/1_000_000:.1f}M" if tok >= 1_000_000 else f"{tok/1000:.0f}k"
-        resets = usage.get("window_resets_in")
-        parts = [tok_s]
-        if against_budget:
-            parts.append(f"{int(frac*100)}%")
-        if resets:
-            parts.append(f"{resets/3600:.1f}h")
-        return " · ".join(parts)
+        return _usage_text(usage)
 
     def draw_footer(self, r: Resolved, state: dict | None, health, now: float,
                     usage: dict | None = None) -> int:

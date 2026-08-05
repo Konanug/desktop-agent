@@ -103,6 +103,17 @@ class Sensor:
             cfg = cam.create_video_configuration(
                 main={"size": protocol.STREAM_SIZE, "format": "RGB888"},
                 controls={"FrameDurationLimits": protocol.FRAME_DURATION_LIMITS},
+                buffer_count=4,
+                # queue=False makes capture_array() wait for the NEXT freshly
+                # exposed frame instead of handing back one already sitting in
+                # the queue. Borrowed from a working camera project of the
+                # owner's, and it matters more here than it does there: this
+                # module's whole contract with the model is that a frame is
+                # from *now*, and camera_look refuses anything older than 2s.
+                # A queued frame could be up to a few hundred ms stale while
+                # being timestamped at the moment we received it -- an age that
+                # would read as fresh and be wrong.
+                queue=False,
             )
             # MEASURED: without this libcamera picks the 1536x864 mode, which is
             # a 0.67x centre crop -- a narrower field of view. Forcing the full
