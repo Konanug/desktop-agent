@@ -60,9 +60,21 @@ SENSOR_OUTPUT_SIZE = (2304, 1296)
 # so nothing is cropped on the way out. Both profiles derive from it.
 STREAM_SIZE = (1024, 576)
 
-# Cap exposure so a dim room cannot pick a shutter long enough to smear a
-# moving hand. 66666 us = 15 fps floor.
-FRAME_DURATION_LIMITS = (33333, 66666)
+# Exposure ceiling. This is a NOISE vs MOTION-BLUR trade, and it only binds in
+# poor light -- in a bright room AE picks a far shorter exposure and the cap is
+# irrelevant.
+#
+# MEASURED in a dim room, same scene and brightness:
+#     cap  66 ms -> exposure 66 ms, gain 16.0 (max), temporal noise 2.01
+#     cap 100 ms -> exposure 99 ms, gain 10.8,       temporal noise 0.94
+#
+# Halving the grain is worth ~1.5x more blur here, because the subject is
+# usually something being deliberately held up rather than something moving
+# fast. If gesture tracking is ever built, revisit -- that case wants the
+# shorter cap. Override with HERMES_CAMERA_MAX_EXPOSURE_US.
+import os as _os
+FRAME_DURATION_LIMITS = (
+    33333, int(_os.environ.get("HERMES_CAMERA_MAX_EXPOSURE_US", "100000")))
 
 # How long the sensor stays open after the last request. Cold wake measured at
 # ~434 ms, so this is not about hiding latency -- it is about not reopening the

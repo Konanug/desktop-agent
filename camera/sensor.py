@@ -34,6 +34,41 @@ AF_FOCUSED = 2
 # HERMES_CAMERA_ROTATE if the module is remounted.
 ROTATE = int(os.environ.get("HERMES_CAMERA_ROTATE", "90")) % 360
 
+# Everything that decides what the picture LOOKS like, set explicitly.
+#
+# Previously only AfMode and AeEnable were set and the rest was left to
+# whatever libcamera defaulted to. That is not a defensible position for a
+# camera whose output a model has to reason about: "it looked fine when I
+# tried it" is not the same as knowing what will happen in a different room.
+#
+# The goal is a plain, honest photograph -- not a pleasing one. Saturation and
+# contrast are left at 1.0 (neutral) deliberately: pushing them makes a nicer
+# thumbnail and a worse measurement, and the whole point of this camera is that
+# something downstream is trying to work out what is actually there.
+IMAGE_CONTROLS = {
+    "AfMode": AF_CONTINUOUS,
+
+    # Auto white balance ON and in auto mode. This is what stops a warm room
+    # rendering orange and a cloudy window rendering blue. It was previously
+    # only on because it happened to be the default.
+    "AwbEnable": True,
+    "AwbMode": 0,              # 0 = auto, rather than a fixed illuminant
+
+    "AeEnable": True,
+    "AeExposureMode": 0,       # normal: prefer exposure time over gain (less noise)
+    # Centre-weighted metering. A big bright wall or desk filling the edges
+    # otherwise drags the whole frame dark; what matters is the middle, which
+    # is where a hand being held up will be.
+    "AeMeteringMode": 0,
+    "AeConstraintMode": 0,     # normal highlight/shadow trade-off
+
+    "Brightness": 0.0,         # neutral
+    "Contrast": 1.0,           # neutral -- do NOT stylise
+    "Saturation": 1.0,         # neutral; oversaturating helps nobody read a scene
+    "Sharpness": 1.0,          # default; over-sharpening invents edge detail
+    "NoiseReductionMode": 0,   # auto
+}
+
 
 class Sensor:
     """Owns the camera. Exclusive: only one process on the box may hold it."""
@@ -75,7 +110,7 @@ class Sensor:
             cfg["sensor"] = {"output_size": protocol.SENSOR_OUTPUT_SIZE,
                              "bit_depth": 10}
             cam.configure(cfg)
-            cam.set_controls({"AfMode": AF_CONTINUOUS, "AeEnable": True})
+            cam.set_controls(IMAGE_CONTROLS)
             cam.start()
         except Exception as e:
             self.last_error = f"camera open failed: {e}"
