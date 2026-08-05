@@ -1,0 +1,24 @@
+[Unit]
+Description=Hermes Pi Claude usage collector - publishes usage.json for the panel
+Documentation=file:///home/alanmyin/projects/hermes-pi/tools/claude_usage.py
+
+# Independent of everything else, like the other services. If it dies the panel
+# simply stops drawing the meter -- which is the correct behaviour, because a
+# stale usage figure is worse than none.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alanmyin/projects/hermes-pi
+# 120s: the figure changes slowly and the scan reads every recent transcript.
+ExecStart=/usr/bin/python3 tools/claude_usage.py --loop 120
+Restart=always
+RestartSec=10
+Nice=10
+CPUQuota=10%
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

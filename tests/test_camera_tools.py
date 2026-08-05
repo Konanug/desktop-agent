@@ -43,7 +43,7 @@ def _reset(status: dict | None = None) -> None:
         st.unlink(missing_ok=True)
     else:
         st.write_text(json.dumps(status))
-    tools._seen_this_turn.clear()
+    tools._recent.clear()
 
 
 def _healthy_status() -> dict:
@@ -139,18 +139,52 @@ def test_fresh_frame_returns_the_multimodal_envelope():
     assert "what is this?" in r["content"][0]["text"]
 
 
-def test_per_turn_cap_stops_a_look_loop():
+def test_rate_limit_stops_a_look_loop():
     """Images are permanent in history; a model that keeps looking is the
     expensive failure, not one large picture."""
     _reset(_healthy_status())
-    for i in range(tools.MAX_FRAMES_PER_TURN):
+    for i in range(tools.MAX_FRAMES_PER_WINDOW):
         assert isinstance(_look_with(_fresh(), task_id="LOOP"), dict), f"call {i}"
-    # The over-cap call must refuse WITHOUT even asking the service, so it is
+    # The over-limit call must refuse WITHOUT waking the camera, so it is
     # called directly rather than through the staged-reply helper.
     r = tools.camera_look({"reason": "test"}, task_id="LOOP")
-    assert isinstance(r, str) and "already captured" in r
+    assert isinstance(r, str) and "rate limit" in r.lower()
     assert not any((CAM / "requests").glob("*.json")), \
         "a refused call still woke the camera"
+
+
+def test_rate_limit_heals_and_cannot_wedge():
+    """THE REGRESSION THAT MATTERS.
+
+    The first version keyed on task_id believing it identified a turn. Hermes
+    documents task_id as a SESSION identifier, so the count never reset and the
+    tool refused permanently -- the agent reported its "capture limit is
+    exhausted" and stayed that way until the gateway restarted. A limit that
+    cannot recover on its own is a wedged tool, not a guard.
+    """
+    _reset(_healthy_status())
+    key = {"task_id": "STUCK"}
+    for _ in range(tools.MAX_FRAMES_PER_WINDOW):
+        _look_with(_fresh(), **key)
+    assert isinstance(tools.camera_look({"reason": "x"}, **key), str), "limit did not engage"
+
+    # Age every recorded capture past the window, as wall-clock time would.
+    tools._recent["STUCK"] = [t - tools.CAPTURE_WINDOW - 1
+                              for t in tools._recent["STUCK"]]
+    assert tools._seconds_until_free(key) == 0.0
+    assert isinstance(_look_with(_fresh(), **key), dict), \
+        "the limit never released -- the tool is wedged"
+
+
+def test_refusal_says_how_long_until_it_clears():
+    """A refusal that sounds permanent invites a restart that is not needed."""
+    _reset(_healthy_status())
+    key = {"task_id": "WAIT"}
+    for _ in range(tools.MAX_FRAMES_PER_WINDOW):
+        _look_with(_fresh(), **key)
+    r = tools.camera_look({"reason": "x"}, **key)
+    assert "clears on its own" in r
+    assert 0 < tools._seconds_until_free(key) <= tools.CAPTURE_WINDOW
 
 
 def test_disable_file_blocks_and_hides():

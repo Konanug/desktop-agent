@@ -59,6 +59,7 @@ unit is dead.
 ├── tools/
 │   ├── render_frames.py  generates the visual → assets/anim/*.pack
 │   ├── bench_spi.py      measures REAL SPI throughput
+│   ├── claude_usage.py   rolling 5h Claude token usage → usage.json
 │   └── camera_probe.py   verifies the camera is LIVE and measures its rate
 ├── tests/                5 modules, all runnable as plain python3
 ├── systemd/              unit + drop-in templates
@@ -81,7 +82,7 @@ Rebuild: `python3 tools/render_frames.py --out assets/anim` (~2 min).
 | Panel | ILI9486 SPI TFT, 480×320 RGB565, `/dev/fb0`, **32 MHz** |
 | Hermes | v0.20.0 at `~/.hermes/`, `hermes` on PATH |
 | Model | `openai-codex/gpt-5.6-terra`; auxiliary → `gpt-5.6-luna` |
-| Services | `hermes-gateway`, `hermes-display`, `hermes-camera` (user) · `hermes-fbcon-detach` (system) |
+| Services | `hermes-gateway`, `hermes-display`, `hermes-camera`, `hermes-usage` (user) · `hermes-fbcon-detach` (system) |
 | Runtime state | `/run/user/1000/hermes-display/{state.json,request.json,images/}` |
 | Network | LAN only, `192.168.2.56`. Port 22 is the ONLY network-facing socket. |
 
@@ -196,7 +197,22 @@ label strip covers 262..290, so rows **26, 27, 260, 261** belong to nobody.
 Leaving an IMAGE screen without wiping the body leaves a bright band of the old
 photo above the state label. `_clear_body()` runs on that transition.
 
-**19. `pkill -f "<pattern>"` matches its own shell.** The pattern appears in the
+**19. Hermes' `task_id` identifies a SESSION, not a turn.** It is documented as
+"unique identifier for terminal/browser session isolation" and is stable for a
+whole Discord conversation. A per-turn counter keyed on it never resets: the
+camera tool refused permanently after N captures and reported its "capture limit
+is exhausted" until the gateway restarted. Any rate limit here must be a
+SLIDING WINDOW so it cannot wedge — `tests/test_camera_tools.py` pins that.
+
+**20. The usage meter must never show "tokens remaining".** The 5-hour limit is
+enforced server-side with unpublished weighting and counts every machine; this
+box can only see transcripts written locally. So `claude_usage.py` publishes
+tokens USED, and the panel draws a proportion only against a budget the owner
+declared in `~/.config/hermes-pi/claude-budget.json`. With no budget it draws
+window time progress, dimmed, which is a different real quantity. Inventing a
+denominator to fill the bar is the "46% PWR LVL" failure.
+
+**21. `pkill -f "<pattern>"` matches its own shell.** The pattern appears in the
 invoking command line, so it kills the caller (exit 144). Anchor it:
 `pgrep -f "^/usr/bin/python3 -m camera"`.
 

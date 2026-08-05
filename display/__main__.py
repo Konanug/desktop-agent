@@ -45,6 +45,10 @@ TICK_LOG = 300.0    # periodic instrumentation line into the journal
 # keeps the clock visually instant while cutting the rasterising ~15x.
 CHROME_PERIOD = 0.5
 
+# How often the Claude usage figure is re-read. It is published by
+# tools/claude_usage.py on its own slow timer; this is just picking up the file.
+USAGE_PERIOD = 5.0
+
 _stop = False
 
 # Screen -> animation pack. Screens absent here (STARTUP, IMAGE, TEXT_CARD)
@@ -168,7 +172,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[display] once: {resolved.screen.value}", flush=True)
             return 0
 
+        def read_usage():
+            """Latest published usage, or None. Never computed here -- summing
+            transcripts is far too much I/O for a 30 Hz loop."""
+            try:
+                import json
+                return json.loads(
+                    (default_request_path().parent / "usage.json").read_text())
+            except Exception:
+                return None
+
         last_log = time.time()
+        last_usage_at = 0.0
+        usage = None
         last_chrome = 0.0
         last_screen = resolved.screen
         while not _stop:
@@ -187,6 +203,9 @@ def main(argv: list[str] | None = None) -> int:
                           or resolved.screen != last_screen)
             if chrome_due:
                 last_chrome = now
+            if now - last_usage_at >= USAGE_PERIOD:
+                last_usage_at = now
+                usage = read_usage()
 
             # Whether the body belongs to show_image this iteration. Without
             # this the IMAGE screen blits a picture and then renderer.draw()
@@ -210,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
                     renderer.invalidate()
                     show_image(fb, renderer, resolved, request)
                 if chrome_due:
-                    renderer.draw_chrome(resolved, state, health, now)
+                    renderer.draw_chrome(resolved, state, health, now, usage)
                 # Force a fresh animation frame when the request expires,
                 # rather than resuming mid-loop over a stale image.
                 player.select("", now)
@@ -219,12 +238,12 @@ def main(argv: list[str] | None = None) -> int:
                 pack_name = _PACK_FOR.get(resolved.screen) if animate else None
             if pack_name:
                 if chrome_due:
-                    renderer.draw_chrome(resolved, state, health, now)
+                    renderer.draw_chrome(resolved, state, health, now, usage)
                 if player.select(pack_name, now):
                     # New pack: clear the body once so a smaller frame cannot
                     # leave the previous animation's edges on screen.
                     renderer.invalidate()
-                    renderer.draw_chrome(resolved, state, health, now)
+                    renderer.draw_chrome(resolved, state, health, now, usage)
                 pk = player.current
                 if pk is not None:
                     ox, oy = pk.origin
@@ -240,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
                             resolved, top=top,
                             height=max(16, renderer.footer.y - top))
             elif chrome_due and not body_owned:
-                renderer.draw(resolved, state, health, now)
+                renderer.draw(resolved, state, health, now, usage)
 
             if resolved.screen != last_screen:
                 # Log transitions, never content -- same privacy rule as the

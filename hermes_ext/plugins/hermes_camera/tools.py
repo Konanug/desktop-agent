@@ -41,21 +41,22 @@ MAX_FRAME_AGE = 2.0
 CAPTURE_TIMEOUT = 8.0          # generous: cold wake measured ~0.7 s
 POLL = 0.01
 PROFILES = ("normal", "fine")
-# Chosen against MEASURED frame size, not a guess. A `normal` frame is ~17 KB
-# of base64, roughly 4x cheaper than the 55-95 KB this was originally budgeted
-# against, so 3 was needlessly tight. 6 x 17 KB = ~102 KB worst case per turn.
+# A RATE limit, not a quota. Sized against measured frame cost (~17 KB of
+# base64 each, so six is ~102 KB) but the important property is the window:
+# it slides, so the allowance always comes back on its own.
 #
-# Hermes itself imposes NO image cap -- multimodal tool results are exempt from
-# its 100k-per-result and 200k-per-turn character budgets. This number is the
-# only limit in the system, and it exists solely to stop a model that cannot
-# read the picture from looking again forever.
-MAX_FRAMES_PER_TURN = 6
+# Hermes imposes NO image cap of its own -- multimodal tool results are exempt
+# from its 100k-per-result and 200k-per-turn character budgets. This is the
+# only limit in the system, which is exactly why it must not be able to wedge.
+MAX_FRAMES_PER_WINDOW = 6
+CAPTURE_WINDOW = 90.0          # seconds; the window slides, so it self-heals
 MAX_REASON = 48
 
 # A frame this far out cannot be a real age -- it is a clock problem.
 IMPLAUSIBLE_AGE = 60.0
 
-_seen_this_turn: dict[str, int] = {}
+# key -> capture timestamps inside the window
+_recent: dict[str, list[float]] = {}
 
 
 def _runtime_dir() -> Path:
@@ -229,19 +230,38 @@ def _turn_key(kwargs: dict) -> str:
     return str(kwargs.get("task_id") or kwargs.get("session_id") or "-")
 
 
-def _count_turn(kwargs: dict) -> int:
-    """Cap images per turn.
+def _count_recent(kwargs: dict) -> int:
+    """Captures by this caller inside the recent window, including this one.
 
-    The failure mode this guards is not one large picture -- it is a model
-    deciding to look again, and again. Every frame stays in history and is
-    re-sent on every later turn of the session, so a loop is permanently
-    expensive in a way nothing downstream can undo.
+    A SLIDING WINDOW, not a per-turn tally, and the distinction is the whole
+    point. The first version counted per "turn" using `task_id` -- but Hermes
+    documents task_id as an identifier for *session* isolation, not for a turn.
+    It is stable for the whole Discord conversation, so the counter never reset
+    and the tool refused permanently after N captures. The agent reported its
+    "capture limit is exhausted" and could not look again until the gateway was
+    restarted, which is a wedged tool, not a guard.
+
+    A time window cannot wedge. A model looping burns the allowance in seconds
+    and is stopped; a person asking again a minute later is simply not the case
+    this exists to catch, and gets a fresh allowance automatically.
     """
     key = _turn_key(kwargs)
-    if len(_seen_this_turn) > 32:
-        _seen_this_turn.clear()
-    _seen_this_turn[key] = _seen_this_turn.get(key, 0) + 1
-    return _seen_this_turn[key]
+    now = time.time()
+    hist = [t for t in _recent.get(key, ()) if now - t < CAPTURE_WINDOW]
+    hist.append(now)
+    _recent[key] = hist
+    if len(_recent) > 32:                      # bound the dict, oldest first
+        for k in sorted(_recent, key=lambda k: _recent[k][-1])[:16]:
+            _recent.pop(k, None)
+    return len(hist)
+
+
+def _seconds_until_free(kwargs: dict) -> float:
+    """How long until the caller may capture again. Never a guess."""
+    hist = _recent.get(_turn_key(kwargs)) or []
+    if len(hist) < MAX_FRAMES_PER_WINDOW:
+        return 0.0
+    return max(0.0, CAPTURE_WINDOW - (time.time() - hist[-MAX_FRAMES_PER_WINDOW]))
 
 
 def _look_or_watch(args: dict, mode: str, **kwargs) -> str | dict:
@@ -249,14 +269,16 @@ def _look_or_watch(args: dict, mode: str, **kwargs) -> str | dict:
     if blocked:
         return blocked
 
-    n = _count_turn(kwargs)
-    if n > MAX_FRAMES_PER_TURN:
-        return (f"You have already captured {MAX_FRAMES_PER_TURN} camera frames "
-                f"in this turn, which is the limit. Answer from what you have "
-                f"already seen, or say plainly that you could not make it out "
-                f"and ask the user to move closer, improve the light, or hold "
-                f"the subject still. Do NOT guess. Images stay in the "
-                f"conversation permanently, so looking again is not free.")
+    n = _count_recent(kwargs)
+    if n > MAX_FRAMES_PER_WINDOW:
+        wait = _seconds_until_free(kwargs)
+        return (f"Camera rate limit: {MAX_FRAMES_PER_WINDOW} captures in "
+                f"{CAPTURE_WINDOW:.0f}s. This clears on its own in about "
+                f"{wait:.0f}s -- it is not stuck and needs no restart. "
+                f"Answer from what you have already seen, or say plainly that "
+                f"you could not make it out and ask the user to move closer or "
+                f"improve the light. Do NOT guess at what is in front of the "
+                f"camera.")
 
     profile = args.get("detail") if args.get("detail") in PROFILES else "normal"
     reason = _sanitise(args.get("reason"))

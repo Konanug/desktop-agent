@@ -184,10 +184,71 @@ class Renderer:
         self._centre(d, max(0, (height - 15) // 2), text, self.f_small, accent, self.w)
         return self._flush(self.label, img)
 
-    def draw_footer(self, r: Resolved, state: dict | None, health, now: float) -> int:
+    def _usage_meter(self, d: ImageDraw.ImageDraw, usage: dict | None) -> str:
+        """Segmented meter along the footer's top edge. Returns a short label.
+
+        Replaces the plain divider rule rather than taking new space -- the
+        footer had no room to spare, and a rule that carries information is
+        better than one that does not.
+
+        HONESTY, which is the whole difficulty here. Two different quantities
+        can be drawn, and they are NOT interchangeable:
+
+          * budget set    -> tokens used as a fraction of the owner's declared
+                             budget. A real measurement over a real denominator.
+          * no budget     -> how far through the 5-hour window we are, drawn
+                             dim. Also real, and clearly a different thing.
+
+        What is never drawn is "tokens remaining", because that is not knowable
+        from here: the limit is enforced server-side with unpublished weighting,
+        and this only sees work done on this machine. Inventing a denominator to
+        make a fuller-looking bar is the "46% PWR LVL" failure (CLAUDE.md).
+
+        No data, or data older than five minutes, draws the plain rule again --
+        a stale meter would assert a number that is no longer true.
+        """
+        x0, x1, top, h = 10, self.w - 10, 1, 4
+        fresh = bool(usage) and (time.time() - float(usage.get("updated_at") or 0)) < 300
+
+        if not fresh:
+            d.line((0, 0, self.w, 0), fill=DIM)
+            return ""
+
+        frac = usage.get("fraction_used")
+        against_budget = frac is not None
+        if not against_budget:
+            frac = usage.get("window_fraction") or 0.0
+
+        # Colour carries meaning only when it is measuring the budget. Window
+        # progress is not a warning about anything, so it stays dim.
+        if against_budget:
+            colour = RED if frac >= 0.9 else AMBER if frac >= 0.75 else CYAN
+        else:
+            colour = DIM
+
+        seg_w, gap = 9, 3
+        n = max(1, (x1 - x0 + gap) // (seg_w + gap))
+        lit = int(round(min(1.0, max(0.0, float(frac))) * n))
+        for i in range(n):
+            sx = x0 + i * (seg_w + gap)
+            d.rectangle((sx, top, sx + seg_w - 1, top + h - 1),
+                        fill=colour if i < lit else (0, 28, 34))
+
+        tok = int(usage.get("billable_tokens") or 0)
+        tok_s = f"{tok/1_000_000:.1f}M" if tok >= 1_000_000 else f"{tok/1000:.0f}k"
+        resets = usage.get("window_resets_in")
+        parts = [tok_s]
+        if against_budget:
+            parts.append(f"{int(frac*100)}%")
+        if resets:
+            parts.append(f"{resets/3600:.1f}h")
+        return " · ".join(parts)
+
+    def draw_footer(self, r: Resolved, state: dict | None, health, now: float,
+                    usage: dict | None = None) -> int:
         img = Image.new("RGB", (self.w, self.footer.h), BLACK)
         d = ImageDraw.Draw(img)
-        d.line((0, 0, self.w, 0), fill=DIM)
+        usage_label = self._usage_meter(d, usage)
 
         link_ok = bool(state) and r.screen not in (
             Screen.HERMES_OFFLINE, Screen.RECONNECTING, Screen.FAILED,
@@ -202,27 +263,35 @@ class Renderer:
         x = badge(12, "discord", link_ok)
         badge(x, "model", model_ok)
 
+        right = self.w - 12
+        if usage_label:
+            uw = d.textbbox((0, 0), usage_label, font=self.f_tiny)[2]
+            d.text((right - uw, 10), usage_label, font=self.f_tiny, fill=CYAN)
+            right -= uw + 14
+
         if state and health.unit_active:
             up = int(now - float(state.get("started_at") or now))
             txt = f"up {up//3600}h {(up%3600)//60:02d}m" if up >= 3600 else f"up {up//60}m {up%60:02d}s"
             tw = d.textbbox((0, 0), txt, font=self.f_tiny)[2]
-            d.text((self.w - tw - 12, 10), txt, font=self.f_tiny, fill=GREY)
+            d.text((right - tw, 10), txt, font=self.f_tiny, fill=GREY)
 
         return self._flush(self.footer, img)
 
-    def draw_chrome(self, r: Resolved, state: dict | None, health, now: float | None = None) -> int:
+    def draw_chrome(self, r: Resolved, state: dict | None, health,
+                    now: float | None = None, usage: dict | None = None) -> int:
         """Header + footer only; the body is the animation's."""
         now = now or time.time()
         return (self.draw_header(r, health.clock_synced, now,
                                  getattr(health, 'camera_on', False))
-                + self.draw_footer(r, state, health, now))
+                + self.draw_footer(r, state, health, now, usage))
 
-    def draw(self, r: Resolved, state: dict | None, health, now: float | None = None) -> int:
+    def draw(self, r: Resolved, state: dict | None, health,
+             now: float | None = None, usage: dict | None = None) -> int:
         now = now or time.time()
         n = self.draw_header(r, health.clock_synced, now,
                              getattr(health, 'camera_on', False))
         n += self.draw_body(r)
-        n += self.draw_footer(r, state, health, now)
+        n += self.draw_footer(r, state, health, now, usage)
         return n
 
     def invalidate(self) -> None:
