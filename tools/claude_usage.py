@@ -15,11 +15,20 @@ consequences that the panel has to respect:
   * the total is a floor, not the truth -- work done on another machine, in the
     web app, or on a phone is invisible to this.
 
-So the meter is drawn against a budget the OWNER sets. If no budget is set, the
-panel shows the window's time progress instead, which is real, and the token
-count as a plain number. Drawing a percentage against a denominator we invented
-would be exactly the fake telemetry this project already refused to ship once
-(see CLAUDE.md, trap 10).
+THE SERVER'S OWN NUMBER IS AVAILABLE, and it outranks all of the above.
+`claude -p "/usage"` runs the slash command non-interactively and prints the
+real session and weekly percentages. Measured: it costs ZERO tokens (a control
+period with no calls consumed 6,894 tokens from a concurrent session; the same
+span containing three calls consumed 0), takes 1.7-3.3 s, and creates no
+transcript. So it is polled on the collector's slow timer and is authoritative.
+
+An earlier version of this file claimed the server figure could not be obtained
+here. That was wrong: it checked for a `usage` SUBCOMMAND, found none, and
+stopped without trying `-p "/usage"`. The local token counting below is now the
+FALLBACK, for when the CLI cannot be reached.
+
+Priority for the panel's bar: server percentage, then a budget the owner
+declared, then nothing at all. Never a guess.
 
 WHY A SEPARATE COLLECTOR
 Summing ~2000 transcript messages is far too much I/O for the display's 30 Hz
@@ -39,6 +48,9 @@ import datetime
 import glob
 import json
 import os
+import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -79,8 +91,78 @@ def _parse_ts(ts: str) -> float | None:
         return None
 
 
-def collect(now: float | None = None) -> dict:
-    """Sum recorded token usage inside the rolling window."""
+# Matches e.g. "Current session: 96% used · resets Aug 5, 6:39pm (America/Toronto)"
+_SESSION_RE = re.compile(
+    r"Current session:\s*(\d+)%\s*used.*?resets\s+([^(\n]+?)\s*(?:\(|$)",
+    re.I | re.S)
+_WEEK_RE = re.compile(r"Current week[^:]*:\s*(\d+)%\s*used", re.I)
+
+
+def _claude_binary() -> str | None:
+    """Locate the claude CLI without depending on PATH.
+
+    A systemd user service starts with a minimal PATH that does NOT include
+    ~/.local/bin, which is exactly where this is installed. Relying on PATH
+    worked from an interactive shell and silently returned nothing from the
+    service -- the panel just quietly showed local figures instead of the real
+    ones, which is the worst kind of failure: plausible and wrong.
+    """
+    found = shutil.which("claude")
+    if found:
+        return found
+    for c in (Path.home() / ".local" / "bin" / "claude",
+              Path("/usr/local/bin/claude"), Path("/usr/bin/claude")):
+        if c.exists():
+            return str(c)
+    return None
+
+
+def query_official(timeout: float = 30.0) -> dict:
+    """Ask Claude Code for the REAL, server-side usage figures.
+
+    `claude -p "/usage"` runs the slash command non-interactively and prints
+    the same thing the interactive session shows. This is authoritative in a
+    way local transcript counting can never be: it is the server's own number,
+    weighted the way the limit actually is, and it includes work done on other
+    devices.
+
+    MEASURED before relying on it:
+      * costs ZERO tokens. Control period with no calls consumed 6,894 tokens
+        (a concurrent session); the same span containing three calls consumed
+        0. It is a client-side query, not an inference request.
+      * takes 1.7-3.3 s, which is why this lives in a 120 s collector loop and
+        not anywhere near the display's 30 Hz path.
+      * creates no new transcript session.
+
+    Returns {} on any failure -- a wrong number here becomes a wrong bar on the
+    panel, so the caller must be able to tell "no answer" from "an answer".
+    """
+    exe = _claude_binary()
+    if not exe:
+        return {}
+    try:
+        r = subprocess.run([exe, "-p", "/usage"], capture_output=True,
+                           text=True, timeout=timeout)
+    except Exception:
+        return {}
+    if r.returncode != 0 or not r.stdout:
+        return {}
+
+    out: dict = {"official_raw_ok": True}
+    m = _SESSION_RE.search(r.stdout)
+    if m:
+        out["session_percent"] = int(m.group(1))
+        out["session_resets_at_text"] = m.group(2).strip()
+    w = _WEEK_RE.search(r.stdout)
+    if w:
+        out["week_percent"] = int(w.group(1))
+    # If the wording ever changes, we get {} rather than a plausible-looking
+    # wrong figure. That is the correct failure for something the panel draws.
+    return out if "session_percent" in out else {}
+
+
+def collect(now: float | None = None, want_official: bool = True) -> dict:
+    """Server-side usage where available, plus local token counts."""
     now = now or time.time()
     cutoff = now - WINDOW_SECONDS
     inp = out = cache_read = cache_write = 0
@@ -129,8 +211,14 @@ def collect(now: float | None = None) -> dict:
     # rather than work done. Reported separately so the choice is visible.
     billable = inp + out + cache_write
 
+    # The server's own figure, when we can get it. This OUTRANKS everything
+    # computed locally: local counting cannot see other devices and does not
+    # know how the limit is weighted.
+    official = query_official() if want_official else {}
+
     budget = _budget()
     return {
+        **official,
         "schema": SCHEMA,
         "updated_at": now,
         "window_seconds": WINDOW_SECONDS,
@@ -145,7 +233,14 @@ def collect(now: float | None = None) -> dict:
         "budget_tokens": budget,
         # Only meaningful when the owner declared a budget. None means the panel
         # must not draw a proportion -- there is nothing to be a proportion of.
-        "fraction_used": (min(1.0, billable / budget) if budget else None),
+        # Priority: the server's number, then a budget the owner declared,
+        # then nothing. Never a guess -- None means the panel draws no bar.
+        "fraction_used": (
+            official["session_percent"] / 100.0 if "session_percent" in official
+            else (min(1.0, billable / budget) if budget else None)),
+        "fraction_source": (
+            "server" if "session_percent" in official
+            else ("budget" if budget else None)),
         # Always real: how far through the window we are.
         "window_fraction": ((now - oldest) / WINDOW_SECONDS) if oldest else None,
         "local_only": True,
@@ -184,7 +279,7 @@ def calibrate(percent: float) -> int:
     if not 0 < percent <= 100:
         print("percent must be between 0 and 100")
         return 2
-    doc = collect()
+    doc = collect(want_official=False)
     local = doc["billable_tokens"]
     if local <= 0:
         print("no local usage recorded in this window yet -- nothing to calibrate from")

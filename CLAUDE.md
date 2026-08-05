@@ -204,13 +204,22 @@ camera tool refused permanently after N captures and reported its "capture limit
 is exhausted" until the gateway restarted. Any rate limit here must be a
 SLIDING WINDOW so it cannot wedge — `tests/test_camera_tools.py` pins that.
 
-**20. The usage meter must never show "tokens remaining".** The 5-hour limit is
-enforced server-side with unpublished weighting and counts every machine; this
-box can only see transcripts written locally. So `claude_usage.py` publishes
-tokens USED, and the panel draws a proportion only against a budget the owner
-declared in `~/.config/hermes-pi/claude-budget.json`. With no budget it draws
-window time progress, dimmed, which is a different real quantity. Inventing a
-denominator to fill the bar is the "46% PWR LVL" failure.
+**20. `claude -p "/usage"` gives the REAL usage figures, non-interactively.**
+Session and weekly percentages, straight from the server. Costs **zero tokens**
+(measured against a control period), takes 1.7-3.3 s, creates no transcript.
+Two traps around it:
+- There is no `usage` SUBCOMMAND. Checking `claude --help` for one and
+  concluding it cannot be done is wrong -- it is a slash command, and `-p`
+  runs slash commands.
+- Resolve the binary explicitly. It lives in `~/.local/bin`, which is NOT on a
+  systemd user service's PATH, so relying on PATH works from a shell and
+  silently returns nothing from the service -- the panel then shows local
+  estimates while looking authoritative.
+
+The panel bar draws the server percentage when available, an owner-declared
+budget otherwise, and NOTHING if neither. It previously fell back to drawing
+how far through the 5-hour window we were, which sat at ~45% while the real
+figure was 90% -- honest in the source, misleading on the glass.
 
 **21. `pkill -f "<pattern>"` matches its own shell.** The pattern appears in the
 invoking command line, so it kills the caller (exit 144). Anchor it:

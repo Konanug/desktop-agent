@@ -67,12 +67,23 @@ def _usage_text(usage: dict | None) -> str:
     """
     if not usage:
         return ""
-    tok = int(usage.get("billable_tokens") or 0)
-    tok_s = f"{tok/1_000_000:.1f}M" if tok >= 1_000_000 else f"{tok/1000:.0f}k"
-    parts = [tok_s]
+    parts: list[str] = []
+
+    # Prefer the server's own numbers. They are the ones that decide when you
+    # actually get cut off; the local token count is only a floor.
+    pct = usage.get("session_percent")
+    if pct is not None:
+        parts.append(f"{pct}%")
+        if usage.get("session_resets_at_text"):
+            parts.append(str(usage["session_resets_at_text"]).split(",")[-1].strip())
+        return " \u00b7 ".join(parts)
+
     frac = usage.get("fraction_used")
     if frac is not None:
         parts.append(f"{int(frac*100)}%")
+    tok = int(usage.get("billable_tokens") or 0)
+    if tok:
+        parts.append(f"{tok/1_000_000:.1f}M" if tok >= 1_000_000 else f"{tok/1000:.0f}k")
     resets = usage.get("window_resets_in")
     if resets:
         parts.append(f"{resets/3600:.1f}h")
