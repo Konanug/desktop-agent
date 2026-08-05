@@ -92,9 +92,17 @@ def _parse_ts(ts: str) -> float | None:
 
 
 # Matches e.g. "Current session: 96% used · resets Aug 5, 6:39pm (America/Toronto)"
+#
+# STRICTLY SINGLE-LINE, and the resets clause is optional. An earlier version
+# used re.S with `.*?` between "used" and "resets", which meant that whenever
+# the session line carried no reset time the match ran on to the NEXT line and
+# picked up the WEEKLY reset date instead -- the panel then displayed "0% ·
+# Aug 12" for a session that resets the same evening. Plausible and wrong,
+# which is the worst thing this file can produce.
 _SESSION_RE = re.compile(
-    r"Current session:\s*(\d+)%\s*used.*?resets\s+([^(\n]+?)\s*(?:\(|$)",
-    re.I | re.S)
+    r"Current session:\s*(\d+)%\s*used"
+    r"(?:[^\n]*?resets\s+([^(\n]+?)\s*(?:\(|$))?",
+    re.I)
 _WEEK_RE = re.compile(r"Current week[^:]*:\s*(\d+)%\s*used", re.I)
 
 
@@ -152,7 +160,11 @@ def query_official(timeout: float = 30.0) -> dict:
     m = _SESSION_RE.search(r.stdout)
     if m:
         out["session_percent"] = int(m.group(1))
-        out["session_resets_at_text"] = m.group(2).strip()
+        # Optional group: absent when the line carries no reset time. Omit the
+        # key entirely rather than storing None, so the panel simply shows no
+        # reset time instead of an empty or borrowed one.
+        if m.group(2):
+            out["session_resets_at_text"] = m.group(2).strip()
     w = _WEEK_RE.search(r.stdout)
     if w:
         out["week_percent"] = int(w.group(1))

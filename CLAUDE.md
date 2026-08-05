@@ -61,7 +61,7 @@ unit is dead.
 │   ├── bench_spi.py      measures REAL SPI throughput
 │   ├── claude_usage.py   rolling 5h Claude token usage → usage.json
 │   └── camera_probe.py   verifies the camera is LIVE and measures its rate
-├── tests/                5 modules, all runnable as plain python3
+├── tests/                6 modules, all runnable as plain python3
 ├── systemd/              unit + drop-in templates
 └── docs/                 ARCHITECTURE, HARDWARE, SECURITY, RUNBOOK, DECISIONS,
                           STATE-CONTRACT, DEFERRED, CAMERA
@@ -252,6 +252,7 @@ python3 tests/test_anim_seam.py      # animation loops close exactly
 python3 tests/test_display_tools.py  # hostile images/URLs refused
 python3 tests/test_camera_tools.py      # a stale frame is never shown as live
 python3 tests/test_camera_indicator.py  # unknown camera state fails toward ON
+python3 tests/test_usage_parse.py       # session figures never borrow the weekly line
 ```
 
 `pytest` is NOT installed system-wide — every test module runs standalone via
