@@ -1,0 +1,11 @@
+name: hermes_camera
+version: 1.0.0
+description: >
+  Lets Hermes see through the Pi's Camera Module 3. camera_look returns one live
+  frame; camera_watch returns several recent moments as a single contact sheet so
+  motion is readable. Both hand the model real pixels via the multimodal tool
+  result envelope. The sensor is owned by the separate hermes-camera service, so
+  this plugin never touches the hardware directly.
+provides_tools:
+  - camera_look
+  - camera_watch

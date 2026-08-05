@@ -3,8 +3,8 @@
 Everything here was verified on this Pi on **2026-08-05**. Nothing is assumed
 from a datasheet. Re-verify any time with `python3 tools/camera_probe.py`.
 
-Status: **hardware present and working. No integration written yet** — this is
-the ground truth to build tomorrow's work on, not a feature.
+Status: **working and integrated.** Hermes can look through this camera and
+answer from the actual pixels. See "Integration" below.
 
 ---
 
@@ -98,23 +98,122 @@ call, which buries real output. Set `LIBCAMERA_LOG_LEVELS=*:ERROR`.
 sensor and the next `Picamera2()` fails. The probe closes after every
 measurement for this reason.
 
-**4. Let AE/AWB settle.** ~1.5 s after `start()` before the first meaningful
-capture, or the frame reflects the initial guess rather than the scene.
+**4. Wait on `AfState`, do not sleep a guess.** An earlier version slept a flat
+1.5 s after `start()` and that number then got quoted as if it were measured.
+Polling `capture_metadata()["AfState"]` until `Focused` takes **406 ms**, and
+it is correct rather than merely long enough.
 
 ---
 
-## Deliberately not decided
+## Integration — BUILT (2026-08-05)
 
-No integration exists yet. Open questions for tomorrow, none of them answered
-here:
+Hermes can see. Ask it over Discord and it looks through this camera and answers
+from the actual pixels. No second model, no local captioning, no describing the
+room in words first.
 
-- Does a preview replace the animation, or is it a separate screen?
-- Who owns the camera — the display service, the gateway, or a Hermes plugin?
-  It cannot be two of them at once; the sensor is exclusive.
-- Stills-on-demand via a Hermes tool would reuse the `display_show_image`
-  trust boundary already built in `hermes_ext/plugins/hermes_display/`. That
-  path already converts to RGB565 and validates length, so it is the cheapest
-  honest route to "show me what you see".
-- Privacy: `docs/SECURITY.md` treats the bot token as shell access. A camera
-  raises that materially — anyone who can reach the bot can see the room.
-  That belongs in the threat model **before** the feature, not after.
+### Why it works on a ChatGPT Plus subscription
+
+Verified against the installed Hermes source, not assumed:
+
+- `openai-codex` reaches `https://chatgpt.com/backend-api/codex` over OAuth.
+- `gpt-5.6-terra` reports `modalities.input = ['text','image','pdf']`, so
+  `decide_image_input_mode()` resolves to `native` and real pixels are sent.
+- `tools/registry.py:_normalize_handler_result` accepts exactly two return
+  shapes: a `str`, or `{"_multimodal": True, "content": [...], "text_summary":}`.
+  `tools/vision_tools.py:_supports_media_in_tool_results` names `openai-codex`.
+- Discord photo attachments already flowed this way, which proved the path.
+
+### Shape
+
+Three processes, none of which may block another:
+
+```
+hermes-camera (new)   owns the sensor exclusively; never touches /dev/fb0
+  camera/sensor.py      the ONLY picamera2 file -- swap to change cameras
+  camera/encode.py      JPEG under a hard ceiling + RGB565 panel preview
+  camera/protocol.py    the tmpfs contract (docs/CAMERA-CONTRACT.md)
+hermes_ext/plugins/hermes_camera/   camera_look, camera_watch
+```
+
+The sensor is **lazy**: closed at rest, opened on demand, closed again after
+20 s idle. It is not held open to save latency, because there is barely any
+latency to save.
+
+### Measured, on this hardware
+
+| | |
+|---|---|
+| cold wake (open → focused → first frame) | **434 ms** (AF→Focused 406 ms) |
+| cold capture, end to end through the plugin | **673 ms** |
+| warm capture | **44 ms** |
+| `normal` 768x432 q72 | ~11–13 KB → **~17 KB base64** |
+| `fine` 1024x576 q78 | ~20–23 KB → **~30 KB base64** |
+| `camera_watch` 2x2 contact sheet | **~29 KB base64** — same order as ONE frame |
+| camera service, sensor asleep | **0.25% CPU, 29 MB RSS** |
+| display service, unchanged | 0.75% CPU |
+
+The earlier "~1.5 s AE settle" was a fixed `time.sleep()` in the probe, not a
+measured requirement. Waiting on `AfState` instead costs 406 ms.
+
+### Field of view — force the sensor mode
+
+A `1024x576` request auto-selects the `1536x864` sensor mode, which is a
+`(768,432)/3072x1728` crop — **a 0.67x narrower field of view**. Forcing
+`output_size=(2304,1296)` gives `ScalerCrop=(0,0,4608,2592)`, the full frame.
+`camera/protocol.py:SENSOR_OUTPUT_SIZE` does this. Without it, "what am I
+doing" loses the sides of the room.
+
+### Context cost — the real constraint
+
+An image embeds in **immutable** history and is **re-sent on every later turn**
+of that session. It cannot be shrunk or evicted afterwards.
+
+Guards: `normal` by default (~17 KB base64); a hard byte ceiling per profile
+enforced by a quality-then-scale loop in `camera/encode.py`; **max 3 image
+returns per turn** keyed on `task_id`, because the expensive failure is a model
+that keeps looking rather than one large picture; and `camera_watch` packing
+four moments into ONE image so motion costs the same as a single frame.
+
+Three `normal` frames ≈ 51 KB of base64 re-uploaded every subsequent turn. The
+only reset is a new session.
+
+### Honesty rules, enforced by tests
+
+`tests/test_camera_tools.py` pins these; they are the camera's version of "the
+panel never invents state":
+
+- a frame older than `MAX_FRAME_AGE` (2 s) is **refused, never shown**
+- an age that cannot be trusted is refused rather than printed — the Pi has no
+  RTC and the clock is wrong for ~34 s after boot (trap 6)
+- every error says *"You have NOT seen anything. Do not describe the room."*
+  A bare error invites answering from priors
+- the frame's age and capture time are always in the text beside the image
+- `camera_watch` states whether it is showing the seconds **before** the
+  question (ring already warm) or **after** (camera was asleep)
+
+### Privacy
+
+**The panel is the tally light, and it is driven by the kernel.**
+`display/health.py` reads the sensor's runtime-PM state, so a camera service
+that crashes with the sensor open, lies, or is replaced cannot switch the light
+off. **The fail direction is inverted** from everything else in this project:
+unknown means *assume ON*. `tests/test_camera_indicator.py` pins that.
+
+**The panel also shows the frame that was sent**, for ~8 s. Not "a light is on"
+but "here is exactly what left the room".
+
+Kill switches, ascending: `~/.config/hermes-pi/camera.disabled` (outside
+`~/.hermes/`, so a config rewrite cannot clobber it) → `systemctl --user stop
+hermes-camera` → `mask` → lens cover / unplug the ribbon. **None of the
+software ones are enforceable against the agent** — see `docs/SECURITY.md`.
+
+## Still open
+
+- **Gestures are not built.** A gesture trigger is a path from "someone waves
+  in the room" to "the agent runs a tool", and the Discord allowlist does not
+  cover it at all. It needs its own security design first.
+- **The camera is currently aimed at the ceiling and out of focus.** Nothing
+  in software fixes that.
+- **D-1 matters more now.** The denied-user Discord test is still unrun, and
+  the allowlist is now the only thing between a stranger and a view of the
+  room.

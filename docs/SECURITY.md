@@ -137,3 +137,61 @@ vcgencmd get_throttled                                  # 0x0 expected
 
 Re-run after every `hermes update` — an update could reintroduce config the drop-ins were written to
 neutralise.
+
+---
+
+## The camera (added 2026-08-05)
+
+The threat model above said the Discord bot token is equivalent to shell access
+on this Pi. With a camera attached that becomes **shell access and a view of the
+room**. This section is the honest version of what that does and does not mean.
+
+### What actually protects the room
+
+1. **The Discord allowlist.** It is the only thing between a stranger and the
+   camera. This raises the priority of **D-1** in `docs/DEFERRED.md` — the
+   denied-user test is still unrun. "The right person got in" was never evidence
+   the wrong person is kept out; now the wrong person can see the room.
+2. **The panel indicator**, because it is driven by the kernel's runtime power
+   state for the sensor rather than by anything the camera service says. A
+   compromised or crashed service cannot switch the light off. It fails toward
+   ON: unknown is displayed as possibly-on, never as off.
+3. **Physical** — a lens cover, or unplugging the ribbon.
+
+### What does NOT protect the room, and why
+
+`~/.config/hermes-pi/camera.disabled`, `systemctl --user stop hermes-camera`
+and `mask` are **conveniences for the owner, not security controls**.
+
+The agent has the `terminal` tool. That is a shell as `alanmyin`. It can delete
+the disable file, start the service, or open the sensor itself, because
+`alanmyin` is in the `video` group. Moving the camera service to another uid
+would not fix this while `alanmyin` keeps `video` — and it must, because
+`/dev/fb0` is in `video` too.
+
+So the software switches stop *accidents* and stop the model doing something
+casually. They do not stop an attacker who already has the bot token. Anyone
+reasoning about this should assume that if the bot is compromised, the camera is
+compromised, and rely on the allowlist and the physical controls instead.
+
+### What the design does to limit blast radius
+
+- The sensor is **closed at rest** and opens only for an explicit capture,
+  closing again after 20 s. There is no always-on feed to hijack.
+- Every capture writes an audit line to the journal (persistent) with the
+  model's stated reason. Never pixel data.
+- The panel displays the exact frame that was sent, so anyone in the room can
+  see what left it.
+- `status.json` carries state, never content.
+- Captures are swept from tmpfs after 60 s rather than accumulating.
+- The camera tools take **no path, filename or URL** from the model — only a
+  reason and a detail level.
+
+### Not built, and why
+
+**Gesture triggers.** A gesture is a path from "someone waves in the room" to
+"the agent runs a tool", and the Discord allowlist does not cover that path at
+all — anyone physically present would become an unauthenticated user of a bot
+with a shell. If it is ever built it needs: an explicit, bounded, visibly
+indicated watch mode; a closed vocabulary mapped to a fixed action allowlist;
+and ideally a restricted toolset for that lane. Do not add it casually.

@@ -172,7 +172,15 @@ def main(argv: list[str] | None = None) -> int:
             if chrome_due:
                 last_chrome = now
 
+            # Whether the body belongs to show_image this iteration. Without
+            # this the IMAGE screen blits a picture and then renderer.draw()
+            # immediately repaints the text body on top of it, so the image is
+            # never actually seen -- display_show_image had this bug from the
+            # start. The body has exactly one owner per frame; say which.
+            body_owned = False
+
             if resolved.screen in (Screen.IMAGE, Screen.TEXT_CARD):
+                body_owned = True
                 if req_changed or last_screen != resolved.screen:
                     renderer.invalidate()
                     show_image(fb, renderer, resolved, request)
@@ -206,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
                         renderer.draw_label_strip(
                             resolved, top=top,
                             height=max(16, renderer.footer.y - top))
-            elif chrome_due:
+            elif chrome_due and not body_owned:
                 renderer.draw(resolved, state, health, now)
 
             if resolved.screen != last_screen:

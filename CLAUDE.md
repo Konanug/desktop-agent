@@ -39,6 +39,11 @@ unit is dead.
 
 ```
 ~/projects/hermes-pi/
+├── camera/               the sensor owner (systemd user service)
+│   ├── sensor.py         ★ ONLY picamera2 file. Swap to change cameras.
+│   ├── encode.py         JPEG under a byte ceiling + RGB565 panel preview
+│   ├── protocol.py       the tmpfs contract shared with the plugin
+│   └── __main__.py       lazy lifecycle, request serving, ring buffer
 ├── display/              the renderer (systemd user service)
 │   ├── panel.py          ★ ONLY hardware-specific file. Swap to change panels.
 │   ├── states.py         resolution order; the "never wrong" logic
@@ -49,12 +54,13 @@ unit is dead.
 │   └── __main__.py       main loop @ 30 Hz
 ├── hermes_ext/           installed INTO ~/.hermes via scripts/install-hermes-ext.sh
 │   ├── hooks/hermes-display-state/   in-process; publishes agent state
-│   └── plugins/hermes_display/       display_show_image/_text/_clear — TRUST BOUNDARY
+│   ├── plugins/hermes_display/       display_show_image/_text/_clear — TRUST BOUNDARY
+│   └── plugins/hermes_camera/        camera_look/_watch — hands the model real pixels
 ├── tools/
 │   ├── render_frames.py  generates the visual → assets/anim/*.pack
 │   ├── bench_spi.py      measures REAL SPI throughput
 │   └── camera_probe.py   verifies the camera is LIVE and measures its rate
-├── tests/                3 modules, all runnable as plain python3
+├── tests/                5 modules, all runnable as plain python3
 ├── systemd/              unit + drop-in templates
 └── docs/                 ARCHITECTURE, HARDWARE, SECURITY, RUNBOOK, DECISIONS,
                           STATE-CONTRACT, DEFERRED, CAMERA
@@ -75,7 +81,7 @@ Rebuild: `python3 tools/render_frames.py --out assets/anim` (~2 min).
 | Panel | ILI9486 SPI TFT, 480×320 RGB565, `/dev/fb0`, **32 MHz** |
 | Hermes | v0.20.0 at `~/.hermes/`, `hermes` on PATH |
 | Model | `openai-codex/gpt-5.6-terra`; auxiliary → `gpt-5.6-luna` |
-| Services | `hermes-gateway`, `hermes-display` (user) · `hermes-fbcon-detach` (system) |
+| Services | `hermes-gateway`, `hermes-display`, `hermes-camera` (user) · `hermes-fbcon-detach` (system) |
 | Runtime state | `/run/user/1000/hermes-display/{state.json,request.json,images/}` |
 | Network | LAN only, `192.168.2.56`. Port 22 is the ONLY network-facing socket. |
 
@@ -145,6 +151,33 @@ If you add anything to the chrome, keep it behind that tick.
 `AttributeError`, which is indistinguishable from a failed import if the
 traceback is truncated. The package IS installed. See `docs/CAMERA.md`.
 
+**13. "Is the camera in use?" CANNOT be answered by open file descriptors.**
+libcamera never opens the capture node (`/dev/video0`, `rp1-cfe-csi2_ch0`); it
+opens `/dev/media0-1`, `/dev/v4l-subdev0-3` and `/dev/video1,4,6,7,20-27`. And
+**pipewire and wireplumber hold exactly that same set permanently, from boot,
+on a fully idle system** — including `v4l-subdev2`, the imx708 itself. An
+fd-based indicator reads "camera in use" 24/7, which is worse than none: it
+trains you to ignore it. Use the sensor's runtime power state instead —
+`/sys/bus/i2c/devices/*/power/runtime_status` where `name` is `imx708`. It is
+`suspended` at rest despite those fds, `active` only while streaming, and lags
+~5 s on the way down (`autosuspend_delay_ms`), which is the safe direction.
+
+**14. `StartLimitIntervalSec` / `StartLimitBurst` belong in `[Unit]`, NOT
+`[Service]`.** In `[Service]` systemd logs `Unknown key ... ignoring` and the
+crash-loop guard silently does not exist. `hermes-display.service` carried that
+bug from the start; both units are fixed. Check with
+`journalctl --user -u <unit> | grep -i "unknown key"` after any unit edit.
+
+**15. The panel body has exactly ONE owner per frame, and it must be declared.**
+`show_image()` blits a picture, then `renderer.draw()` repaints the text body on
+top of it, so the image is never seen. `display_show_image` had this bug from
+the day it was written. `display/__main__.py` now tracks `body_owned` and skips
+the text redraw. If you add another body producer, extend that flag.
+
+**16. `pkill -f "<pattern>"` matches its own shell.** The pattern appears in the
+invoking command line, so it kills the caller (exit 144). Anchor it:
+`pgrep -f "^/usr/bin/python3 -m camera"`.
+
 ---
 
 ## Conventions
@@ -170,6 +203,8 @@ cd ~/projects/hermes-pi
 python3 tests/test_states.py         # panel cannot claim health when there is none
 python3 tests/test_anim_seam.py      # animation loops close exactly
 python3 tests/test_display_tools.py  # hostile images/URLs refused
+python3 tests/test_camera_tools.py      # a stale frame is never shown as live
+python3 tests/test_camera_indicator.py  # unknown camera state fails toward ON
 ```
 
 `pytest` is NOT installed system-wide — every test module runs standalone via
@@ -207,22 +242,48 @@ because chrome rasterising is throttled (see trap 11).
 
 ---
 
-## Current task — NEXT: camera
+## Current task — camera DONE; gestures deliberately not built
 
-**Camera Module 3 is connected, detected and verified working.** No integration
-is written. `docs/CAMERA.md` has the measured ground truth: sensor modes,
-30 fps delivered at every capture size, CPU cost, and the gotchas.
+**Hermes can see.** Ask over Discord and it looks through the Camera Module 3
+and answers from the actual pixels — no second model, no local captioning.
+`camera_look` (one frame) and `camera_watch` (four moments as one contact sheet,
+for motion). Measured numbers, context cost and privacy design in
+`docs/CAMERA.md`; the tmpfs interface in `docs/CAMERA-CONTRACT.md`.
 
-The number that constrains the design: the panel ceiling is **10.37 fps** and
-the display already uses 86.7% of the bus at 9 fps. A camera preview is
-**bus-limited, not camera-limited**, and would REPLACE the animation rather
-than run alongside it. Decide that before writing code.
+Key facts a future session should not have to rediscover:
 
-Also unanswered, and listed in `docs/CAMERA.md`: who owns the sensor (it is
-exclusive — display service, gateway, or a Hermes plugin, not two), and the
-privacy question. `docs/SECURITY.md` already treats the bot token as shell
-access; a camera means anyone who reaches the bot can see the room. That
-belongs in the threat model BEFORE the feature.
+- Cold capture **673 ms**, warm **44 ms**. A `normal` frame is **~17 KB base64**.
+  A four-moment contact sheet is ~29 KB — the same order as one frame, which is
+  the whole point of packing them into a grid.
+- Images are **immutable in conversation history and re-sent every turn**. That,
+  not latency, is the binding constraint. Hence small-by-default, a hard byte
+  ceiling, and a 3-image cap per turn.
+- The sensor is **lazy** (closed at rest, 20 s idle timeout) and **exclusive** —
+  exactly one process may hold it, which is why `hermes-camera` exists as a
+  third service rather than living in the display or the gateway.
+- The panel's CAM light is driven by the **kernel's sensor power state**, not by
+  anything the camera service claims, and it **fails toward ON**. See trap 13
+  for why the obvious file-descriptor approach cannot work here.
+
+### What is NOT built, and why
+
+**Gesture triggers.** A gesture is a path from "someone waves in the room" to
+"the agent runs a tool", and the Discord allowlist does not cover that path at
+all — anyone physically present becomes an unauthenticated user of a bot with a
+shell. It needs its own security design first: an explicit, bounded, visibly
+indicated watch mode; a closed vocabulary mapped to a fixed action allowlist;
+and preferably a restricted toolset for that lane. See `docs/SECURITY.md`.
+
+**Do not install mediapipe** if that work happens: pip-only, no apt package,
+uncertain Python 3.13/aarch64 wheel, PEP 668 environment. `python3-onnxruntime`
+is in apt; convert a small hand model on the laptop.
+
+### Physical
+
+The camera is currently **aimed at the ceiling and out of focus**. Nothing in
+software fixes that.
+
+---
 
 ### Visual direction — settled
 
@@ -269,4 +330,5 @@ without being asked. What was learned and is worth keeping:
 | `docs/STATE-CONTRACT.md` | the interface between the two processes |
 | `docs/SECURITY.md` | threat model; bot token ≈ shell access |
 | `docs/DEFERRED.md` | what is knowingly not done |
-| `docs/CAMERA.md` | Camera Module 3: verified facts, measured rates, gotchas |
+| `docs/CAMERA.md` | Camera: how it works, measured rates, context cost, privacy |
+| `docs/CAMERA-CONTRACT.md` | the tmpfs interface between camera service and plugin |

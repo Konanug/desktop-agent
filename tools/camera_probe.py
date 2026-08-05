@@ -133,11 +133,168 @@ def probe(frames: int = 30) -> int:
     return 0
 
 
+def sensor_power_path(sensor: str = "imx708") -> str | None:
+    """Path to the sensor's runtime-PM status, resolved BY DEVICE NAME.
+
+    WHY NOT OPEN FILE DESCRIPTORS -- measured 2026-08-05, do not retry this.
+    The obvious "is the camera in use" probe is to look for a process holding
+    an fd on the capture node. It does not work on this Pi, for two reasons
+    that compound:
+
+      1. libcamera never opens /dev/video0 (rp1-cfe-csi2_ch0) at all. It opens
+         /dev/media0-1, /dev/v4l-subdev0-3, /dev/video1,4,6,7 and the whole
+         /dev/video20-27 pispbe range.
+      2. pipewire and wireplumber hold EXACTLY THAT SAME SET, permanently,
+         from boot, on an idle system -- including v4l-subdev2, the imx708.
+
+    So fd presence cannot distinguish "the camera is streaming" from "the
+    desktop session manager enumerated the device once at boot". An indicator
+    built on it would read "camera in use" 24 hours a day, which is worse than
+    having none: it trains the owner to ignore it.
+
+    The sensor's runtime power state does work. It is suspended on an idle
+    system despite those open fds, and goes active only when someone actually
+    streams. It is a fact about whether the hardware is powered, published by
+    the kernel, and nothing in userspace can forge it.
+    """
+    import glob
+    for d in glob.glob("/sys/bus/i2c/devices/*"):
+        try:
+            if open(f"{d}/name").read().strip() == sensor:
+                p = f"{d}/power/runtime_status"
+                return p if os.path.exists(p) else None
+        except OSError:
+            continue
+    return None
+
+
+def sensor_powered(path: str | None) -> bool | None:
+    """True = powered, False = suspended, None = cannot tell.
+
+    None matters: the caller must treat "cannot tell" as "assume ON". For a
+    privacy indicator the fail-safe direction is inverted from everything else
+    in this project -- never claim the camera is off unless positively
+    observed off.
+
+    Note the reading LAGS by up to autosuspend_delay_ms (5000 ms here): the
+    sensor stays active for ~5 s after streaming stops. That lag is in the
+    safe direction, so it is left alone rather than tuned.
+    """
+    if not path:
+        return None
+    try:
+        return open(path).read().strip() == "active"
+    except OSError:
+        return None
+
+
+def profile() -> int:
+    """Measure the numbers Phase 1 of the camera design depends on.
+
+    Everything here exists because the alternative was to guess. See
+    docs/CAMERA.md -- the numbers this prints are the ones that belong there.
+    """
+    _quiet()
+    import io
+    import numpy as np
+    from PIL import Image
+    from picamera2 import Picamera2
+
+    pw = sensor_power_path()
+    print(f"sensor power file: {pw or 'NOT FOUND'}")
+    print(f"  at rest:         powered={sensor_powered(pw)}  (expect False)")
+
+    # --- sensor mode / field of view -------------------------------------
+    # The mode table advertises 1536x864 as a (768,432)/3072x1728 crop -- a
+    # NARROWER field of view than the full-frame modes. If libcamera silently
+    # picks it for a 1024x576 request we lose the sides of the room, which is
+    # exactly what "what am I doing" needs.
+    print("\n-- sensor mode selection for a 1024x576 request --")
+    for forced in (None, (2304, 1296)):
+        p = Picamera2()
+        cfg = p.create_video_configuration(main={"size": (1024, 576), "format": "RGB888"})
+        if forced:
+            cfg["sensor"] = {"output_size": forced, "bit_depth": 10}
+        p.configure(cfg)
+        sensor = p.camera_configuration().get("sensor", {})
+        scaler = p.camera_ctrl_info.get("ScalerCrop")
+        p.start(); time.sleep(0.6)
+        md = p.capture_metadata()
+        p.stop(); p.close()
+        label = "auto" if forced is None else f"forced {forced[0]}x{forced[1]}"
+        print(f"  {label:22s} sensor={sensor.get('output_size')} "
+              f"ScalerCrop={md.get('ScalerCrop')}")
+    del scaler
+
+    # --- cold wake, autofocus, and the settle that dominates it -----------
+    print("\n-- cold wake (open -> first trustworthy frame) --")
+    t0 = time.time()
+    p = Picamera2()
+    p.configure(p.create_video_configuration(
+        main={"size": (1024, 576), "format": "RGB888"},
+        controls={"FrameDurationLimits": (33333, 66666)}))
+    t_cfg = time.time()
+    p.set_controls({"AfMode": 2, "AeEnable": True})     # 2 = Continuous
+    p.start()
+    t_start = time.time()
+
+    af_state, af_at, lux = None, None, None
+    deadline = time.time() + 6.0
+    while time.time() < deadline:
+        md = p.capture_metadata()
+        af_state, lux = md.get("AfState"), md.get("Lux")
+        if af_state == 2:                                # 2 = Focused
+            af_at = time.time()
+            break
+    exp, gain = md.get("ExposureTime"), md.get("AnalogueGain")
+    print(f"  construct+configure {1000*(t_cfg-t0):7.0f} ms")
+    print(f"  start()             {1000*(t_start-t_cfg):7.0f} ms")
+    print(f"  AF -> Focused       "
+          f"{f'{1000*(af_at-t_start):7.0f} ms' if af_at else '  NOT REACHED (6s)'}"
+          f"   AfState={af_state}")
+    print(f"  total cold wake     {1000*((af_at or time.time())-t0):7.0f} ms")
+    print(f"  scene: Lux={lux}  ExposureTime={exp} us  AnalogueGain={gain}")
+    if exp and exp > 66666:
+        print("  WARNING exposure exceeds the 66 ms cap -> moving hands will smear")
+
+    print(f"  powered while streaming: {sensor_powered(pw)}  (expect True)")
+
+    # --- encode profiles: the real bytes, for THIS room -------------------
+    print("\n-- encode profiles (real bytes for the current scene) --")
+    frame = p.capture_array("main")
+    results = {}
+    for name, size, q in (("normal", (768, 432), 72), ("fine", (1024, 576), 78)):
+        t0 = time.time()
+        img = Image.fromarray(frame)
+        if img.size != size:
+            img = img.resize(size, Image.BILINEAR)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=q, optimize=False)
+        dt = 1000 * (time.time() - t0)
+        n = buf.tell()
+        b64 = 4 * ((n + 2) // 3)
+        results[name] = n
+        print(f"  {name:7s} {size[0]}x{size[1]:<4} q{q}  {n:7,} B  "
+              f"-> base64 {b64:7,}  encode+resize {dt:5.1f} ms")
+
+    p.stop()
+    p.close()
+    # autosuspend_delay_ms is 5000; wait past it so the reading is meaningful.
+    time.sleep(6.0)
+    print(f"\n  powered 6s after close:  {sensor_powered(pw)}  (expect False)")
+
+    print("\nPut these numbers in docs/CAMERA.md. They are the budget.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", type=int, default=30,
                     help="frames per throughput measurement")
-    return probe(ap.parse_args().frames)
+    ap.add_argument("--profile", action="store_true",
+                    help="measure the numbers the camera design depends on")
+    args = ap.parse_args()
+    return profile() if args.profile else probe(args.frames)
 
 
 if __name__ == "__main__":

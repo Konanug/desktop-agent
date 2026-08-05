@@ -117,13 +117,20 @@ permanently. Prefer lossless frame sources.
 
 ---
 
-## D-4 — Camera integration not started (2026-08-05)
+## D-4 — Camera: RESOLVED for stills and motion, gestures still deferred (2026-08-05)
 
-Camera Module 3 is **connected and verified working** — see `docs/CAMERA.md` for measured facts.
-Nothing is integrated. The open decisions are recorded there, not here; the two that block design are
-(a) a preview is bus-limited and must REPLACE the animation, and (b) the sensor is exclusive, so
-exactly one process may own it.
+Hermes can see. `camera_look` and `camera_watch` hand the model real pixels; the `hermes-camera`
+service owns the sensor exclusively; the panel shows a kernel-driven CAM indicator and the frame
+that was sent. Measured facts in `docs/CAMERA.md`, protocol in `docs/CAMERA-CONTRACT.md`, threat
+model updated in `docs/SECURITY.md`.
 
-Privacy is the one that must not be deferred silently: `docs/SECURITY.md` treats the bot token as
-equivalent to shell access. Adding a camera makes that "and can see the room". The threat model needs
-updating before, not after.
+**Still deferred: gesture triggers.** A gesture is a path from "someone waves in the room" to "the
+agent runs a tool", and the Discord allowlist does not cover it. Needs an explicit bounded watch
+mode, a closed gesture vocabulary mapped to a fixed action allowlist, and preferably a restricted
+toolset for that lane. Also needs a hand model: **do not install mediapipe** (pip-only, no apt
+package, uncertain Python 3.13/aarch64 wheel, PEP 668 environment). `python3-onnxruntime` is in apt
+and a small ONNX classifier converted on the laptop is the maintainable route.
+
+**Also open:** a continuous panel preview would be bus-limited (10.37 fps ceiling, display already at
+86.7%) and would replace the animation rather than run beside it. Not attempted; the 8-second
+still-preview after each capture is cheaper and answers the privacy question better.

@@ -102,13 +102,34 @@ class Renderer:
         return self.fb.blit(arr, 0, zone.y)
 
     # -- zones -----------------------------------------------------------
-    def draw_header(self, r: Resolved, clock_ok: bool, now: float) -> int:
+    def draw_header(self, r: Resolved, clock_ok: bool, now: float,
+                    camera_on: bool | None = False) -> int:
         img = Image.new("RGB", (self.w, self.header.h), BLACK)
         d = ImageDraw.Draw(img)
         _, accent = _LABEL.get(r.screen, ("", CYAN))
 
         d.ellipse((10, 12, 20, 22), fill=accent)
         d.text((28, 7), "HERMES", font=self.f_mid, fill=WHITE)
+
+        # Camera tally light.
+        #
+        # Deliberately CHROME and not a Screen state: the camera can be powered
+        # while the panel is showing OFFLINE or FAILED, and the indicator has to
+        # survive that. It is driven by the kernel's runtime power state for the
+        # sensor, not by anything the camera service says about itself, so a
+        # crashed or dishonest service cannot switch it off.
+        #
+        # THE FAIL DIRECTION IS INVERTED from everything else here. Elsewhere,
+        # unknown means "assume nothing good". For the camera, unknown means
+        # ASSUME IT IS ON -- never tell someone the camera is off unless that
+        # was positively observed.
+        if camera_on is not False:
+            on = camera_on is True
+            col = RED if on else AMBER
+            label = "CAM" if on else "CAM?"
+            x = 110
+            d.ellipse((x, 12, x + 9, 21), fill=col)
+            d.text((x + 14, 8), label, font=self.f_tiny, fill=col)
 
         # The Pi has no battery-backed RTC. Until NTP syncs (~34 s after boot)
         # the clock is plausibly wrong, so we show placeholders instead of a
@@ -192,12 +213,14 @@ class Renderer:
     def draw_chrome(self, r: Resolved, state: dict | None, health, now: float | None = None) -> int:
         """Header + footer only; the body is the animation's."""
         now = now or time.time()
-        return (self.draw_header(r, health.clock_synced, now)
+        return (self.draw_header(r, health.clock_synced, now,
+                                 getattr(health, 'camera_on', False))
                 + self.draw_footer(r, state, health, now))
 
     def draw(self, r: Resolved, state: dict | None, health, now: float | None = None) -> int:
         now = now or time.time()
-        n = self.draw_header(r, health.clock_synced, now)
+        n = self.draw_header(r, health.clock_synced, now,
+                             getattr(health, 'camera_on', False))
         n += self.draw_body(r)
         n += self.draw_footer(r, state, health, now)
         return n

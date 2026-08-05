@@ -1,0 +1,51 @@
+[Unit]
+Description=Hermes Pi Camera - exclusive sensor owner, serves capture requests
+Documentation=file:///home/alanmyin/projects/hermes-pi/docs/CAMERA.md
+
+# No Wants=, no After=, no Requires= on anything.
+# The camera is independent of both other services by design: it must be
+# stoppable as a privacy control without disturbing Discord, and a wedged
+# sensor must never be able to take the gateway or the panel down with it.
+# All three processes can die independently -- that is the property the whole
+# system is built on.
+#
+# StartLimit* live HERE, in [Unit]. systemd only reads them from [Unit]; put
+# them in [Service] and it logs "Unknown key ... ignoring" and the crash-loop
+# guard silently does not exist. hermes-display.service had exactly that bug.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alanmyin/projects/hermes-pi
+ExecStart=/usr/bin/python3 -m camera
+
+# libcamera logs several INFO lines to stderr on every configure(). Without
+# this the journal fills with pipeline chatter and the one line that matters --
+# the capture audit line -- gets buried.
+Environment=LIBCAMERA_LOG_LEVELS=*:ERROR
+
+Restart=always
+RestartSec=3
+
+# Release the sensor cleanly rather than leaving it powered. The service
+# closes the camera on SIGTERM; if it cannot, the kernel's 5s runtime-PM
+# autosuspend eventually drops it anyway.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# NOTE: MemoryMax= is deliberately absent -- it would be silently ignored.
+# cgroup_disable=memory on the kernel cmdline means only cpuset/cpu/io/pids
+# are available. Same reason as hermes-display.service.
+#
+# The quota exists so the camera can never starve the display, which is the
+# service with a hard real-time-ish deadline (a late blit is a visible stutter).
+# Measured: ~6% streaming at 1024x576 plus short encode bursts.
+CPUQuota=60%
+Nice=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

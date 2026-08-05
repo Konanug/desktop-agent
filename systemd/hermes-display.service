@@ -10,6 +10,15 @@ Documentation=file:///home/alanmyin/projects/hermes-pi/docs/ARCHITECTURE.md
 Wants=hermes-gateway.service
 After=hermes-gateway.service
 
+# Crash-loop guard. Without this a bad panel or missing /dev/fb0 would spin
+# forever at 3s intervals. Budget is looser than the gateway's because a
+# restart here is cheap and harmless.
+#
+# These MUST be in [Unit]: systemd ignores StartLimit* in [Service] with only
+# a log line, so for a long time this guard was not actually in effect.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
 [Service]
 Type=simple
 WorkingDirectory=/home/alanmyin/projects/hermes-pi
@@ -20,12 +29,6 @@ ExecStart=/usr/bin/python3 -m display
 # failure in the system.
 Restart=always
 RestartSec=3
-
-# Crash-loop guard. Without this a bad panel or missing /dev/fb0 would spin
-# forever at 3s intervals. Budget is looser than the gateway's because a
-# restart here is cheap and harmless.
-StartLimitIntervalSec=300
-StartLimitBurst=10
 
 # Paint a final SHUTDOWN frame instead of freezing mid-render.
 KillSignal=SIGTERM
