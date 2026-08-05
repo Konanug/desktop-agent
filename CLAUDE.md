@@ -52,15 +52,17 @@ unit is dead.
 │   └── plugins/hermes_display/       display_show_image/_text/_clear — TRUST BOUNDARY
 ├── tools/
 │   ├── render_frames.py  generates the visual → assets/anim/*.pack
-│   └── bench_spi.py      measures REAL SPI throughput
+│   ├── bench_spi.py      measures REAL SPI throughput
+│   └── camera_probe.py   verifies the camera is LIVE and measures its rate
 ├── tests/                3 modules, all runnable as plain python3
 ├── systemd/              unit + drop-in templates
 └── docs/                 ARCHITECTURE, HARDWARE, SECURITY, RUNBOOK, DECISIONS,
-                          STATE-CONTRACT, DEFERRED
+                          STATE-CONTRACT, DEFERRED, CAMERA
 ```
 
 `assets/anim/*.pack` is **gitignored and generated** (~95 MB, 8 packs).
-Rebuild: `python3 tools/render_frames.py --out assets/anim` (~90 s).
+Rebuild: `python3 tools/render_frames.py --out assets/anim` (~2 min).
+`fps` lives only in the `.json` sidecars — changing it needs no re-render.
 
 ---
 
@@ -120,6 +122,29 @@ the array first.
 **8. Hermes' hook `emit()` AWAITS coroutine handlers inline** — a slow hook
 stalls the agent pipeline. The hook must stay a tiny non-blocking tmpfs write.
 
+**9. A fixed poll interval cannot express a frame period that is not a multiple
+of it.** At `POLL=0.03` and 12 fps, frames displayed for **90/90/90/60 ms**
+instead of a steady 83.3 ms — a visible hitch four times a second. The loop now
+sleeps to `player.next_due()`, which holds intervals to ±1 ms. Any future frame
+rate must keep this; do not go back to a bare `time.sleep(POLL)`.
+
+**10. Asking for more fps than the bus carries makes it JUMPY, not fast.** At
+12 fps the demand was 2,672,640 B/s against 2,562,838 available; roughly one
+frame in 23 could not be sent and the wall-clock index skipped to catch up.
+Stay meaningfully below the ceiling — 9 fps leaves 13.3% headroom. 10 fps fits
+arithmetically but leaves only 3.6%, so any slow blit becomes a visible skip.
+
+**11. Zone dirty-hashing stops chrome being BLITTED, not DRAWN.** Every loop
+iteration built three PIL images and rasterised text purely to hash the result
+and discard it. That was the single largest CPU cost in the process — 6.36% of
+a core. Chrome is now rasterised on a 0.5 s tick (`CHROME_PERIOD`), and
+immediately on screen change so transitions never wait on a timer: **0.73%**.
+If you add anything to the chrome, keep it behind that tick.
+
+**12. `picamera2` has no `__version__`.** `picamera2.__version__` raises
+`AttributeError`, which is indistinguishable from a failed import if the
+traceback is truncated. The package IS installed. See `docs/CAMERA.md`.
+
 ---
 
 ## Conventions
@@ -155,36 +180,66 @@ python3 tests/test_display_tools.py  # hostile images/URLs refused
 ## Measured performance (do not regress)
 
 ```
-SPI 32 MHz · 2.573 MB/s · 11.6 fps for 232-row frames · 0 errors · 64% bus
-display  2.9% CPU · 51 MB RSS       gateway  0.8% CPU · 163 MB RSS
-10-minute soak at 32 MHz: STABLE, 0 errors, 0 timeouts
+SPI 32 MHz · 2,562,838 B/s · 0 errors · 0 timeouts
+one 480x232 frame costs 246,499 B TRANSMITTED  ->  ceiling 10.37 fps
+running at 9 fps = 2,221,200 B/s = 86.7% of bus, 13.3% headroom
+display  0.73% CPU · 52 MB RSS      gateway  0.8% CPU · 163 MB RSS
 ```
 
-Idle panel writes **zero** SPI bytes (zone dirty-hashing). Keep it that way.
+**Budget on transmitted bytes, not pixel bytes.** A 480x232 frame is 222,720 B
+of pixels but **246,499 B cross the bus** — fbtft's deferred IO is PAGE
+granular, so a 232-row write dirties partial pages at both ends and ~25 extra
+rows go out. Measured by playing one pack at 5 and 10 fps and solving. Costing
+it by pixel count overstates capacity by 11% and was how fps came to be set
+above what the hardware could carry.
+
+**"Idle writes zero SPI bytes" is FALSE and has been since animation packs
+landed.** It was true in Phase 6, when the body was a static text screen.
+`player.due()` now advances every frame in every state including idle, and each
+advance blits all 232 rows: **2.2 MB/s sustained, permanently**. Zone
+dirty-hashing still gives the *chrome* zones zero cost, which is the part that
+remains true. Not a fault — 0 errors, thermals fine — but it is waste, and the
+fix (row-span dirty detection in `player.py`) is unimplemented.
+
+The 2.9% CPU figure that used to sit here was also from the text-screen era.
+Measured on the animated build, the ORIGINAL code cost 6.36%; it is 0.73% now
+because chrome rasterising is throttled (see trap 11).
 
 ---
 
-## Current task (in progress)
+## Current task — NEXT: camera
 
-**Adopting the HUD aesthetic of https://github.com/purzbeats/interfaces.**
+**Camera Module 3 is connected, detected and verified working.** No integration
+is written. `docs/CAMERA.md` has the measured ground truth: sensor modes,
+30 fps delivered at every capture size, CPU cost, and the gotchas.
 
-That repo is Three.js/WebGL/TypeScript with 384 element types, Vite, Playwright,
-FFmpeg. It **cannot run here** — this Pi has no GPU (`/dev/dri` absent) and no X
-in the appliance config. It is not merely "too large"; it is architecturally
-incompatible.
+The number that constrains the design: the panel ceiling is **10.37 fps** and
+the display already uses 86.7% of the bus at 9 fps. A camera preview is
+**bus-limited, not camera-limited**, and would REPLACE the animation rather
+than run alongside it. Decide that before writing code.
 
-The plan is to **learn its visual vocabulary and reimplement the relevant parts**
-in `tools/render_frames.py` using numpy/Pillow, which already pre-renders to
-RGB565 packs — so richer visuals cost **build time only, never runtime**.
+Also unanswered, and listed in `docs/CAMERA.md`: who owns the sensor (it is
+exclusive — display service, gateway, or a Hermes plugin, not two), and the
+privacy question. `docs/SECURITY.md` already treats the bot token as shell
+access; a camera means anyone who reaches the bot can see the room. That
+belongs in the threat model BEFORE the feature.
 
-Elements worth adapting, mapped to states: radar sweep (thinking), oscilloscope
-/ waveform (responding, receiving), data cascade (tool_use), corner brackets and
-frame ticks (always), bar gauges and readouts (idle), scanlines.
+### Visual direction — settled
 
-Constraints: 480×232 band, cyan-on-black (`#00E5FF`), high contrast because
-RGB565 bands, integer cycles per loop, ≤232 dirty rows.
+The panel shows the original rings-and-core visual. A HUD/multi-pane direction
+was explored against https://github.com/purzbeats/interfaces and **deliberately
+abandoned**; the repo was reverted to the plain visual. Do not re-attempt it
+without being asked. What was learned and is worth keeping:
 
-The user has said visuals are a **polish pass** — reliability is already done.
+- That repo CAN run on this Pi (headless Chromium + SwiftShader; node, chromium
+  and ffmpeg are all installed). The blocker was macOS-only Chromium flags
+  (`--use-angle=metal`, `--disable-software-rasterizer`), not the hardware.
+  The old claim here that it was "architecturally incompatible" was wrong.
+- Its output is unusable at 480x232 as-is: it BSP-subdivides into ~60px
+  fragments and falls back to JPEG capture, which puts noise on the black.
+- Third-party HUD elements bake in **fake telemetry** — one rendered
+  "46% PWR LVL", which a pre-rendered pack cannot retract. Screen any borrowed
+  asset for text before shipping it.
 
 ---
 
@@ -214,3 +269,4 @@ The user has said visuals are a **polish pass** — reliability is already done.
 | `docs/STATE-CONTRACT.md` | the interface between the two processes |
 | `docs/SECURITY.md` | threat model; bot token ≈ shell access |
 | `docs/DEFERRED.md` | what is knowingly not done |
+| `docs/CAMERA.md` | Camera Module 3: verified facts, measured rates, gotchas |

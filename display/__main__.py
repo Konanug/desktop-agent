@@ -33,6 +33,18 @@ from .watcher import RequestWatcher, StateWatcher, default_request_path
 POLL = 0.03
 TICK_LOG = 300.0    # periodic instrumentation line into the journal
 
+# How often the Pillow chrome (header/footer/label) is re-rendered.
+#
+# Zone dirty-hashing stops chrome being BLITTED when unchanged, but it does not
+# stop it being DRAWN: every iteration built three PIL images and rasterised
+# text just to hash the result and throw it away. At 33 Hz that was the largest
+# single CPU cost in the process.
+#
+# Nothing in the chrome changes faster than once a minute (clock, uptime) apart
+# from state, which is handled separately by forcing a redraw on change. 0.5 s
+# keeps the clock visually instant while cutting the rasterising ~15x.
+CHROME_PERIOD = 0.5
+
 _stop = False
 
 # Screen -> animation pack. Screens absent here (STARTUP, IMAGE, TEXT_CARD)
@@ -141,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         last_log = time.time()
+        last_chrome = 0.0
         last_screen = resolved.screen
         while not _stop:
             now = time.time()
@@ -152,11 +165,19 @@ def main(argv: list[str] | None = None) -> int:
             machine.tick(now)
             resolved = machine.current
 
+            # Rasterise chrome on a slow tick, but ALWAYS immediately when the
+            # screen changes -- a state transition must never wait on a timer.
+            chrome_due = (now - last_chrome >= CHROME_PERIOD
+                          or resolved.screen != last_screen)
+            if chrome_due:
+                last_chrome = now
+
             if resolved.screen in (Screen.IMAGE, Screen.TEXT_CARD):
                 if req_changed or last_screen != resolved.screen:
                     renderer.invalidate()
                     show_image(fb, renderer, resolved, request)
-                renderer.draw_chrome(resolved, state, health, now)
+                if chrome_due:
+                    renderer.draw_chrome(resolved, state, health, now)
                 # Force a fresh animation frame when the request expires,
                 # rather than resuming mid-loop over a stale image.
                 player.select("", now)
@@ -164,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 pack_name = _PACK_FOR.get(resolved.screen) if animate else None
             if pack_name:
-                renderer.draw_chrome(resolved, state, health, now)
+                if chrome_due:
+                    renderer.draw_chrome(resolved, state, health, now)
                 if player.select(pack_name, now):
                     # New pack: clear the body once so a smaller frame cannot
                     # leave the previous animation's edges on screen.
@@ -179,10 +201,12 @@ def main(argv: list[str] | None = None) -> int:
                         fb.blit_packed(frame, ox, oy)
                     # Label sits just under the animation. Its own zone hash
                     # means a 12 fps visual does not repaint static text.
-                    top = min(oy + pk.h + 2, renderer.footer.y - 18)
-                    renderer.draw_label_strip(
-                        resolved, top=top, height=max(16, renderer.footer.y - top))
-            else:
+                    if chrome_due:
+                        top = min(oy + pk.h + 2, renderer.footer.y - 18)
+                        renderer.draw_label_strip(
+                            resolved, top=top,
+                            height=max(16, renderer.footer.y - top))
+            elif chrome_due:
                 renderer.draw(resolved, state, health, now)
 
             if resolved.screen != last_screen:
@@ -197,7 +221,14 @@ def main(argv: list[str] | None = None) -> int:
                       f"since start, screen={resolved.screen.value}", flush=True)
                 last_log = now
 
-            time.sleep(POLL)
+            # Sleep to whichever comes first: the next state poll, or the next
+            # animation frame. Waking exactly on the frame deadline is what
+            # makes playback even -- a fixed POLL can only land on multiples of
+            # itself, which quantised 83.3 ms frames into 90/90/90/60 ms.
+            deadline = player.next_due(now) if pack_name else None
+            delay = POLL if deadline is None else max(
+                0.0, min(POLL, deadline - time.time()))
+            time.sleep(delay)
 
         # Leave the panel in an honest final state rather than frozen mid-frame.
         print("[display] SIGTERM -> shutdown screen", flush=True)

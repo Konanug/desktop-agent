@@ -23,6 +23,28 @@ from pathlib import Path
 
 import numpy as np
 
+# Seconds to cross-dissolve when the state changes. Long enough to read as a
+# transition, short enough that the panel is never lying about the current
+# state for a noticeable time -- the new state is on screen within ~a third of
+# a second, it just arrives instead of cutting.
+FADE = 0.35
+
+
+def blend565(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
+    """Cross-dissolve two RGB565 frames, t=0 -> a, t=1 -> b.
+
+    Blending has to happen per CHANNEL, not on the packed uint16: the packed
+    value is three bit-fields, so interpolating it as a single number bleeds
+    blue into green into red and produces colour garbage mid-fade.
+    """
+    out = np.zeros_like(a)      # zeros, not empty: we OR into this
+    for shift, mask in ((11, 0x1F), (5, 0x3F), (0, 0x1F)):
+        ca = ((a >> shift) & mask).astype(np.float32)
+        cb = ((b >> shift) & mask).astype(np.float32)
+        c = (ca + (cb - ca) * t + 0.5).astype(np.uint16) & mask
+        out |= c << shift
+    return out
+
 
 class Pack:
     def __init__(self, path: Path):
@@ -78,6 +100,11 @@ class Player:
         self._started = 0.0
         self._last_index = -1
         self.missing: set[str] = set()
+        # Cross-dissolve bookkeeping: the last frame actually shown, and the
+        # deadline until which it is still being blended into the new pack.
+        self._last_frame: np.ndarray | None = None
+        self._fade_from: np.ndarray | None = None
+        self._fade_until = 0.0
 
     def available(self) -> bool:
         return self.dir.is_dir() and any(self.dir.glob("*.pack"))
@@ -100,14 +127,40 @@ class Player:
             return None
 
     def select(self, name: str, now: float | None = None) -> bool:
-        """Switch packs. Returns True if the active pack changed."""
+        """Switch packs. Returns True if the active pack changed.
+
+        Starts a cross-dissolve from whatever was last on screen. Without it a
+        state change is a hard cut between two unrelated visuals -- different
+        ring counts, intensities and hues -- which reads as the panel glitching
+        rather than as Hermes moving to a new state.
+        """
         pack = self.get(name)
         if pack is None or pack is self._current:
             return False
+        now = now or time.time()
+        if self._current is not None and self._last_frame is not None:
+            # Copy: the source may be an mmap view that the old pack owns.
+            self._fade_from = self._last_frame.copy()
+            self._fade_until = now + FADE
         self._current = pack
-        self._started = now or time.time()
+        self._started = now
         self._last_index = -1
         return True
+
+    def next_due(self, now: float | None = None) -> float | None:
+        """Wall-clock time the next frame is due, so the caller can sleep to it.
+
+        A fixed poll interval cannot express a frame period that is not a
+        multiple of it: at 30 Hz polling and 12 fps, frames were measured
+        displaying for 90/90/90/60 ms instead of a steady 83.3 ms, and the
+        short one reads as a hitch four times a second.
+        """
+        if self._current is None:
+            return None
+        now = now or time.time()
+        p = self._current
+        idx = int((now - self._started) * p.fps)
+        return self._started + (idx + 1) / p.fps
 
     @property
     def current(self) -> Pack | None:
@@ -127,10 +180,24 @@ class Player:
         if not p.loop and idx >= p.frames:
             idx = p.frames - 1
         idx %= p.frames
-        if idx == self._last_index:
+
+        fading = self._fade_from is not None and now < self._fade_until
+        # While dissolving, every tick produces a new blend even if the source
+        # frame index has not advanced -- otherwise the fade would step only as
+        # often as the pack does and look like a stutter, not a dissolve.
+        if idx == self._last_index and not fading:
             return None
         self._last_index = idx
-        return p.frame(idx), p.origin
+
+        frame = p.frame(idx)
+        if fading:
+            t = 1.0 - (self._fade_until - now) / FADE
+            frame = blend565(self._fade_from, frame, min(max(t, 0.0), 1.0))
+        elif self._fade_from is not None:
+            self._fade_from = None      # dissolve finished; drop the source
+
+        self._last_frame = frame
+        return frame, p.origin
 
     def close(self) -> None:
         for p in self._packs.values():

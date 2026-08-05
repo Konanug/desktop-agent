@@ -213,7 +213,29 @@ def write_pack(out: Path, name: str, frames: np.ndarray, fps: int, loop: bool,
 # than faster. Frame counts are generous because more frames means a smaller
 # angular step per frame -- the main lever on perceived smoothness once fps is
 # fixed by hardware.
-_FPS = 12         # measured ceiling for 232 rows at 32 MHz (was 6 at 16 MHz).
+# MUST STAY BELOW THE BUS, NOT AT IT.
+#
+# A 480x232 frame is 222,720 B of pixels, but that is NOT what crosses the
+# bus. Measured by rendering the same pack at 5 and 10 fps and solving:
+#
+#     per frame       246,499 B  (256.8 rows, not 232)
+#     fixed overhead    6,795 B/s (chrome)
+#     bus capacity  2,562,838 B/s  ->  ceiling 10.37 fps
+#
+# fbtft's deferred IO is PAGE-granular, so a 232-row write dirties partial
+# pages at both ends and ~25 extra rows get transmitted. Budgeting on the
+# pixel count alone overstates capacity by 11%.
+#
+# This was 12 fps = 2,672,640 B/s of demand against 2,562,838 available. About
+# one frame in 23 could not be sent on time and the wall-clock frame index
+# skipped ahead to catch up -- that is what "jumpy" was.
+#
+# 9 fps = 2,225,286 B/s = 87% of capacity. 10 would technically fit but leaves
+# only 3.6% headroom, so any slow blit immediately becomes a visible skip.
+#
+# fps lives in the .json sidecar only -- pixels do not depend on it, so
+# changing this does NOT require re-rendering the packs.
+_FPS = 9
 
 PACKS = {
     #  name          style                                                    frames fps   loop

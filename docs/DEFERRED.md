@@ -85,3 +85,45 @@ time with full confidence — exactly the "fake state" failure the architecture 
 
 Log timestamps from the first ~34s of any boot are unreliable. When correlating boot-time events, trust
 `ps -o lstart` or `journalctl -b` ordering over wall-clock strings.
+
+---
+
+## D-3 — Idle panel saturates the SPI bus (measured 2026-08-05)
+
+**Status: known, unfixed, not urgent.** 0 errors, 0 timeouts, thermals fine — waste, not a fault.
+
+`CLAUDE.md` long claimed "idle panel writes zero SPI bytes". True in Phase 6, when the body was a
+static text screen and zone dirty-hashing meant an unchanged panel pushed nothing. Animation packs
+made it false and the claim was not updated until now.
+
+`player.due()` returns a new frame every frame period in *every* state, idle included, and each one
+is blitted in full. At 9 fps that is **2,221,200 B/s sustained, forever, to display IDLE**.
+
+### Fix, if wanted
+
+Row-span dirty detection in `player.py`: keep the last blitted frame, compare row-wise, blit only the
+changed span.
+
+- fbtft is row-granular, so a narrower span is a genuine proportional saving.
+- The comparison is ~223 KB of numpy, well under 1 ms, against up to ~110 ms of SPI it can avoid.
+- Biggest win on `idle` and `offline`, which are mostly static; near zero on `thinking`, where the
+  visual touches most rows anyway. That is the right shape — cost should track how much is moving.
+
+### Caveat that constrains any future frame source
+
+This only pays if frames are *clean*. Any source that puts per-pixel noise on the black background
+(JPEG-captured video, for instance) makes every row differ every frame and defeats the optimisation
+permanently. Prefer lossless frame sources.
+
+---
+
+## D-4 — Camera integration not started (2026-08-05)
+
+Camera Module 3 is **connected and verified working** — see `docs/CAMERA.md` for measured facts.
+Nothing is integrated. The open decisions are recorded there, not here; the two that block design are
+(a) a preview is bus-limited and must REPLACE the animation, and (b) the sensor is exclusive, so
+exactly one process may own it.
+
+Privacy is the one that must not be deferred silently: `docs/SECURITY.md` treats the bot token as
+equivalent to shell access. Adding a camera makes that "and can see the room". The threat model needs
+updating before, not after.
