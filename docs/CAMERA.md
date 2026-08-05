@@ -98,7 +98,14 @@ call, which buries real output. Set `LIBCAMERA_LOG_LEVELS=*:ERROR`.
 sensor and the next `Picamera2()` fails. The probe closes after every
 measurement for this reason.
 
-**4. Wait on `AfState`, do not sleep a guess.** An earlier version slept a flat
+**4. `"RGB888"` from picamera2 is BGR in the array**, and the sensor here is
+mounted 90 degrees off, so corrected frames are PORTRAIT (576x1024). Both are
+handled in `camera/sensor.py`. Consequences worth knowing: never resize a frame
+to fixed landscape dimensions (it squashes), and the panel preview is a
+letterboxed vertical strip because the camera's natural view genuinely is
+portrait. `HERMES_CAMERA_ROTATE` changes it if the module is remounted.
+
+**5. Wait on `AfState`, do not sleep a guess.** An earlier version slept a flat
 1.5 s after `start()` and that number then got quoted as if it were measured.
 Polling `capture_metadata()["AfState"]` until `Focused` takes **406 ms**, and
 it is correct rather than merely long enough.

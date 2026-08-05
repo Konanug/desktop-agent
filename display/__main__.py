@@ -104,6 +104,22 @@ def show_image(fb, renderer, resolved, request) -> None:
         renderer.draw_body(resolved)
 
 
+def _clear_body(fb, renderer) -> None:
+    """Blank the whole body zone.
+
+    Needed when leaving an IMAGE screen. The camera preview is 264 rows tall
+    and fills the body exactly; the animation that replaces it is 232 rows at
+    y=28, and the label strip covers 262..290. That leaves rows 26, 27, 260 and
+    261 painted by nobody, so the last few lines of the previous photo survive
+    as a bright band above the state label -- which looks like a rendering
+    fault and is, in a small way, the panel showing something that is no longer
+    true.
+    """
+    import numpy as np
+    h = renderer.footer.y - renderer.header.h
+    fb.blit(np.zeros((h, renderer.w, 3), np.uint8), 0, renderer.header.h)
+
+
 def _handle_signal(signum, _frame):
     global _stop
     _stop = True
@@ -178,6 +194,15 @@ def main(argv: list[str] | None = None) -> int:
             # never actually seen -- display_show_image had this bug from the
             # start. The body has exactly one owner per frame; say which.
             body_owned = False
+
+            # Leaving a photo: wipe the body before the animation returns.
+            # The animation and label strip between them do not cover every
+            # row the preview used, so without this the last lines of the
+            # picture persist as a bright band. Once, on the transition.
+            if (last_screen in (Screen.IMAGE, Screen.TEXT_CARD)
+                    and resolved.screen not in (Screen.IMAGE, Screen.TEXT_CARD)):
+                _clear_body(fb, renderer)
+                renderer.invalidate()
 
             if resolved.screen in (Screen.IMAGE, Screen.TEXT_CARD):
                 body_owned = True

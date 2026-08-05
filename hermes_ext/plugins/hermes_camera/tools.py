@@ -41,7 +41,15 @@ MAX_FRAME_AGE = 2.0
 CAPTURE_TIMEOUT = 8.0          # generous: cold wake measured ~0.7 s
 POLL = 0.01
 PROFILES = ("normal", "fine")
-MAX_FRAMES_PER_TURN = 3
+# Chosen against MEASURED frame size, not a guess. A `normal` frame is ~17 KB
+# of base64, roughly 4x cheaper than the 55-95 KB this was originally budgeted
+# against, so 3 was needlessly tight. 6 x 17 KB = ~102 KB worst case per turn.
+#
+# Hermes itself imposes NO image cap -- multimodal tool results are exempt from
+# its 100k-per-result and 200k-per-turn character budgets. This number is the
+# only limit in the system, and it exists solely to stop a model that cannot
+# read the picture from looking again forever.
+MAX_FRAMES_PER_TURN = 6
 MAX_REASON = 48
 
 # A frame this far out cannot be a real age -- it is a clock problem.
@@ -243,10 +251,12 @@ def _look_or_watch(args: dict, mode: str, **kwargs) -> str | dict:
 
     n = _count_turn(kwargs)
     if n > MAX_FRAMES_PER_TURN:
-        return (f"You have already captured {MAX_FRAMES_PER_TURN} camera "
-                f"frames in this turn. Answer from what you have already seen, "
-                f"or ask the user to describe what changed. Images stay in the "
-                f"conversation permanently, so looking repeatedly is costly.")
+        return (f"You have already captured {MAX_FRAMES_PER_TURN} camera frames "
+                f"in this turn, which is the limit. Answer from what you have "
+                f"already seen, or say plainly that you could not make it out "
+                f"and ask the user to move closer, improve the light, or hold "
+                f"the subject still. Do NOT guess. Images stay in the "
+                f"conversation permanently, so looking again is not free.")
 
     profile = args.get("detail") if args.get("detail") in PROFILES else "normal"
     reason = _sanitise(args.get("reason"))

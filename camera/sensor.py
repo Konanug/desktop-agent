@@ -17,6 +17,8 @@ from __future__ import annotations
 import os
 import time
 
+import numpy as np
+
 from . import protocol
 
 # libcamera logs several INFO lines to stderr on every configure(). Set before
@@ -25,6 +27,12 @@ os.environ.setdefault("LIBCAMERA_LOG_LEVELS", "*:ERROR")
 
 AF_CONTINUOUS = 2
 AF_FOCUSED = 2
+
+# Quarter-turn correction, degrees anticlockwise: 0, 90, 180 or 270.
+# The camera module is mounted rotated relative to the room, which no amount of
+# libcamera configuration fixes (its transform does flips only). Override with
+# HERMES_CAMERA_ROTATE if the module is remounted.
+ROTATE = int(os.environ.get("HERMES_CAMERA_ROTATE", "90")) % 360
 
 
 class Sensor:
@@ -118,7 +126,27 @@ class Sensor:
         except Exception as e:
             self.last_error = f"capture failed: {e}"
             return None
-        return frame, time.time(), time.monotonic()
+
+        # picamera2's "RGB888" gives BGR in the numpy array. The format name
+        # describes the packed byte order, which is the reverse of the channel
+        # order you get out. Treating it as RGB swaps red and blue, and the
+        # symptom is a strong blue cast on everything -- skin goes blue, warm
+        # light goes cold.
+        #
+        # MEASURED rather than taken from the docs: compare capture_array()
+        # against capture_image() (picamera2's own PIL path, which is known
+        # correct). Mean absolute difference was 1.43 as-is versus 0.27 when
+        # channel-reversed. See docs/CAMERA.md.
+        frame = frame[..., ::-1]
+
+        if ROTATE:
+            # The sensor is mounted rotated relative to the scene. libcamera's
+            # transform only does h/v flips (i.e. 180 degrees), so a quarter
+            # turn has to happen here. np.rot90 is a view + copy of ~1.8 MB,
+            # well under a millisecond at this size.
+            frame = np.rot90(frame, k=ROTATE // 90)
+
+        return np.ascontiguousarray(frame), time.time(), time.monotonic()
 
     def metadata(self) -> dict:
         if self._cam is None:

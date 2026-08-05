@@ -24,6 +24,13 @@ from PIL import Image, ImageDraw
 
 from . import protocol
 
+def _fit_long_edge(size: tuple[int, int], long_edge: int) -> tuple[int, int]:
+    """Scale so the longer side equals long_edge, keeping the aspect ratio."""
+    w, h = size
+    scale = long_edge / max(w, h)
+    return (max(1, round(w * scale)), max(1, round(h * scale)))
+
+
 MIN_QUALITY = 45
 QUALITY_STEP = 10
 SCALE_STEP = 0.8
@@ -37,8 +44,17 @@ def to_jpeg(frame: np.ndarray, profile: str = protocol.DEFAULT_PROFILE
     size, quality, ceiling = spec["size"], spec["quality"], spec["max_bytes"]
 
     img = Image.fromarray(frame)
-    if img.size != size:
-        img = img.resize(size, Image.BILINEAR)
+    # Fit the profile's LONG EDGE and keep the aspect ratio, rather than
+    # forcing the profile's exact dimensions.
+    #
+    # The sensor is mounted rotated, so a corrected frame is PORTRAIT while the
+    # profiles are written landscape. Resizing straight to (768,432) squashed a
+    # 576x1024 frame into a third of its height -- everything in shot came out
+    # wide and flat, which is worse than useless when the question is "how many
+    # fingers am I holding up".
+    target = _fit_long_edge(img.size, max(size))
+    if img.size != target:
+        img = img.resize(target, Image.BILINEAR)
 
     for attempt in range(MAX_ATTEMPTS):
         buf = io.BytesIO()
@@ -75,6 +91,11 @@ def contact_sheet(frames: list[np.ndarray], labels: list[str],
     spec = protocol.PROFILES.get(profile) or protocol.PROFILES[protocol.DEFAULT_PROFILE]
     W, H = spec["size"]
 
+    # Match the sheet to the frames' own aspect, for the same reason to_jpeg
+    # does: the source may be portrait, and a squashed grid is harder to read
+    # than a portrait one.
+    fh, fw = frames[0].shape[0], frames[0].shape[1]
+    W, H = _fit_long_edge((fw, fh), max(W, H))
     cols = 1 if len(frames) == 1 else 2
     rows = (len(frames) + cols - 1) // cols
     tw, th = W // cols, H // rows

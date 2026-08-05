@@ -174,7 +174,29 @@ top of it, so the image is never seen. `display_show_image` had this bug from
 the day it was written. `display/__main__.py` now tracks `body_owned` and skips
 the text redraw. If you add another body producer, extend that flag.
 
-**16. `pkill -f "<pattern>"` matches its own shell.** The pattern appears in the
+**16. picamera2's `"RGB888"` hands you BGR.** The format name describes packed
+byte order, which is the reverse of the channel order in the numpy array.
+Treating it as RGB swaps red and blue: skin goes blue, warm light goes cold,
+and the whole frame reads as a bad exposure. `camera/sensor.py` reverses it.
+Verify empirically rather than from docs — compare `capture_array()` against
+`capture_image()` (picamera2's own PIL path, known correct): mean abs diff was
+**1.43 as-is vs 0.27 channel-reversed**.
+
+**17. A rotated sensor produces PORTRAIT frames; never resize to fixed
+dimensions.** The module is mounted 90 degrees off, so corrected frames are
+576x1024. Resizing those to a landscape profile (768x432) squashed everything
+to a third of its height. All resizes now fit the LONG EDGE and keep aspect
+(`encode._fit_long_edge`) — including the ring buffer, which had the same bug
+one layer down and made warm contact sheets differ from cold ones. Rotation is
+`HERMES_CAMERA_ROTATE` (default 90).
+
+**18. The panel body has rows that only the camera preview paints.** The
+preview is 264 rows and fills the body; the animation is 232 at y=28 and the
+label strip covers 262..290, so rows **26, 27, 260, 261** belong to nobody.
+Leaving an IMAGE screen without wiping the body leaves a bright band of the old
+photo above the state label. `_clear_body()` runs on that transition.
+
+**19. `pkill -f "<pattern>"` matches its own shell.** The pattern appears in the
 invoking command line, so it kills the caller (exit 144). Anchor it:
 `pgrep -f "^/usr/bin/python3 -m camera"`.
 

@@ -189,8 +189,16 @@ class Service:
         if got is None:
             return
         frame, wall, mono = got
+        # Preserve aspect here too. RING_SIZE is written landscape, but a
+        # rotated sensor produces portrait frames, and resizing straight to it
+        # squashed every ring frame -- which then squashed the contact sheet,
+        # so warm "what did I just do" looked different from cold.
         small = np.asarray(
-            Image.fromarray(frame).resize(protocol.RING_SIZE), dtype=np.uint8)
+            Image.fromarray(frame).resize(
+                encode._fit_long_edge(
+                    (frame.shape[1], frame.shape[0]), max(protocol.RING_SIZE)),
+                Image.BILINEAR),
+            dtype=np.uint8)
         self._ring.append((small, wall, mono))
         self._last_ring = now
 
