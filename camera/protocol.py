@@ -58,7 +58,19 @@ SENSOR_OUTPUT_SIZE = (2304, 1296)
 
 # Stream size the service runs at. 16:9, matching the sensor's native aspect,
 # so nothing is cropped on the way out. Both profiles derive from it.
-STREAM_SIZE = (1024, 576)
+#
+# THIS IS RESOLUTION, NOT FIELD OF VIEW, and the difference matters because
+# raising it is often asked for as a way to "see more of the room". It is not.
+# MEASURED at four configurations: with SENSOR_OUTPUT_SIZE forced, ScalerCrop is
+# (0,0,4608,2592) -- 100% of the sensor -- at 1024x576, 1536x864 AND 2048x1152.
+# The view is already as wide as this lens gives. Only the standard module is
+# fitted here (imx708, ~75 deg diagonal); widening it is an imx708_wide, i.e. a
+# purchase, not a setting. What more resolution buys is DETAIL, which is worth
+# having for detection and for a person watching -- just not more room.
+#
+# 1536x864 costs 19.0 ms cpu/frame against 13.0 at 1024x576 (measured, at a 640
+# output). Chosen with hand tracking in mind, which is size-insensitive.
+STREAM_SIZE = (1536, 864)
 
 # Exposure ceiling. This is a NOISE vs MOTION-BLUR trade, and it only binds in
 # poor light -- in a bright room AE picks a far shorter exposure and the cap is
@@ -98,16 +110,23 @@ RING_SIZE = (384, 216)
 # exactly one network-facing socket (ssh) before it -- see docs/SECURITY.md.
 STREAM_PORT = 8081
 
-# MEASURED on a real 576x1024 frame from this camera (resize + Pillow JPEG,
-# median of 40):
-#     long edge 480 -> 6.1 ms,  4.9 KB
-#     long edge 640 -> 7.7 ms,  8.7 KB
-#     long edge 768 -> 9.3 ms, 13.6 KB
-# The RESIZE dominates, not the JPEG. 640 at 15 fps is ~11.6% of one core and
-# ~130 KB/s on the wire, well inside the unit's CPUQuota=60%.
-STREAM_LONG_EDGE = 640
+# MEASURED end to end (grab + correct + resize + JPEG), main stream 1536x864:
+#     out  640 long edge -> 19.0 ms cpu, 17.3 KB  -> 28.5% core at 15 fps
+#     out  960 long edge -> 26.5 ms cpu, 32.1 KB  -> 39.8% core at 15 fps
+#     out 1280 long edge -> 39.0 ms cpu, 53.3 KB  -> 58.5% core at 15 fps
+# 960 is the point where the picture is clearly better and there is still room
+# for a 60 ms hand-detection pass on another core. 1280 leaves none.
+STREAM_LONG_EDGE = 960
 STREAM_QUALITY = 70
 STREAM_FPS = 15.0
+
+# -- hand tracking (camera/hands.py) -------------------------------------
+# 10 Hz, not the stream's 15. MEASURED: inference is ~60 ms and, importantly,
+# ~60 ms at EVERY input size, because mediapipe rescales to its own fixed input
+# internally. So 10 Hz is already two thirds of a core; 15 would be all of one.
+# It runs on its own thread, so this rate does not pace the stream.
+HANDS_HZ = 10.0
+HANDS_MAX = 2
 
 # Grace period after the last viewer disconnects. A browser reloading the page
 # closes and reopens the connection, and without a linger that round trip would
@@ -142,6 +161,23 @@ def ensure_dirs() -> Path:
 
 def status_path() -> Path:
     return runtime_dir() / "status.json"
+
+
+def hands_path() -> Path:
+    """Latest hand-tracking observation.
+
+    SEPARATE FROM status.json ON PURPOSE. The rule at the top of this file is
+    that status carries STATE, NEVER CONTENT -- nothing derived from what the
+    camera can see -- so that a file the display reads can never become a side
+    channel for the room. A gesture is unambiguously derived from what the
+    camera can see, so it does not belong there.
+
+    It has to be published somewhere, because a desktop client acting on
+    gestures is the whole point of the exercise. Putting it in its own file
+    keeps the original rule intact and makes this an explicit exception rather
+    than a quiet erosion of it. Nothing in this project reads this file yet.
+    """
+    return runtime_dir() / "hands.json"
 
 
 def requests_dir() -> Path:

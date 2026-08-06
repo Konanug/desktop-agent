@@ -40,7 +40,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from . import encode, protocol, stream
+from . import encode, hands, protocol, stream
 from .sensor import Sensor
 
 POLL_ASLEEP = 0.10      # invisible against a ~434 ms cold wake
@@ -143,6 +143,17 @@ class Service:
         self._last_wake_try = 0.0
         self._last_sweep = 0.0
 
+        # Hand tracking. Optional in the strongest sense: if mediapipe or the
+        # model is missing the tracker never starts and everything else --
+        # including Hermes' ability to see -- carries on unchanged.
+        self.tracker = hands.HandTracker(interval=1.0 / protocol.HANDS_HZ,
+                                         max_hands=protocol.HANDS_MAX)
+        self.hands_enabled = os.environ.get(
+            "HERMES_CAMERA_HANDS", "on").lower() not in ("off", "0", "no")
+        self._last_hands = 0.0
+        self._hands_written = 0.0
+        self._last_hands_err: str | None = None
+
     # -- status ---------------------------------------------------------
     def status_doc(self) -> dict:
         """STATE, NEVER CONTENT. Same rule as state.json.
@@ -169,6 +180,11 @@ class Service:
             "viewers": self.stream_buf.viewers,
             "stream_fps": round(self.stream_fps, 2),
             "live": frame is not None and time.time() - at <= stream.STALE_AFTER,
+            # Whether tracking is RUNNING is state. What it saw is content, and
+            # lives in hands.json -- see protocol.hands_path().
+            "hands_tracking": self.tracker.available and self.hands_enabled,
+            "hands_error": self.tracker.error,
+            "hands_ms": round(self.tracker.mean_ms, 1),
         }
 
     def publish_status(self, now: float, force: bool = False) -> None:
@@ -214,6 +230,9 @@ class Service:
         # Forget the last frame. Anything still holding the page open must see
         # NO SIGNAL, not the final picture before the camera closed.
         self.stream_buf.drop()
+        if self.tracker.available:
+            self.tracker.stop()
+            self._reset_tracker()
         self.publish_status(time.time(), force=True)
         print("[camera] sensor closed (idle)", flush=True)
 
@@ -242,6 +261,41 @@ class Service:
             self._live_pinned = live
             print(f"[camera] frame duration {limits[0]}-{limits[1]} us "
                   f"({'live view' if live else 'stills'})", flush=True)
+
+    def apply_tracking(self, live: bool) -> None:
+        """Track hands only while somebody is watching.
+
+        Two reasons, and the second is the important one. It costs ~60 ms of a
+        core per pass, which is not worth spending on an empty room. And a
+        camera that continuously analyses what people in the room are DOING is
+        a materially different thing from one that streams pixels -- tying it
+        to an attached viewer keeps it bounded by something the owner can see.
+        """
+        if not self.hands_enabled:
+            return
+        if live and not self.tracker.available:
+            if self.tracker.start():
+                print("[camera] hand tracking started "
+                      f"({protocol.HANDS_HZ:.0f} Hz, model {hands.model_path()})",
+                      flush=True)
+            elif self.tracker.error and self.tracker.error != self._last_hands_err:
+                self._last_hands_err = self.tracker.error
+                print(f"[camera] hand tracking unavailable: "
+                      f"{self.tracker.error}", flush=True)
+        elif not live and self.tracker.available:
+            self.tracker.stop()
+            self._reset_tracker()
+            print("[camera] hand tracking stopped (nobody watching)", flush=True)
+
+    def _reset_tracker(self) -> None:
+        """A stopped tracker must not leave a result behind that later reads as
+        current, nor a hands.json a desktop client could act on."""
+        self.tracker = hands.HandTracker(interval=1.0 / protocol.HANDS_HZ,
+                                         max_hands=protocol.HANDS_MAX)
+        try:
+            protocol.hands_path().unlink(missing_ok=True)
+        except OSError:
+            pass
 
     # -- frames ---------------------------------------------------------
     def pump_frames(self, now: float) -> None:
@@ -273,16 +327,26 @@ class Service:
         frame, wall, mono = got
 
         if stream_due:
+            # Hand the tracker the frame the stream already made. Detection is
+            # size-insensitive (measured), so this costs no extra capture, no
+            # extra resize and no extra copy -- the thread just reads it.
+            if (self.tracker.available
+                    and now - self._last_hands >= 1.0 / protocol.HANDS_HZ):
+                self._last_hands = now
+                self.tracker.offer(frame, wall)
             self._push_stream(frame, wall, now)
         if ring_due:
             self._push_ring(frame, wall, mono, now)
 
     def _push_stream(self, frame, wall: float, now: float) -> None:
+        result = self.tracker.result() if self.tracker.available else None
+        overlay = (lambda img: hands.draw(img, result, now)) if result else None
         try:
-            jpeg = encode.to_stream_jpeg(frame)
+            jpeg = encode.to_stream_jpeg(frame, overlay=overlay)
         except Exception as e:                              # pragma: no cover
             print(f"[camera] stream encode failed: {e}", flush=True)
             return
+        self._publish_hands(result, now)
         self.stream_buf.push(jpeg, wall)
         self._last_stream = now
         # Delivered rate over a rolling second. Reported to the page because a
@@ -293,6 +357,40 @@ class Service:
             self.stream_fps = self._stream_count / (now - self._stream_window)
             self._stream_count = 0
             self._stream_window = now
+
+    def _publish_hands(self, result, now: float) -> None:
+        """Write hands.json for anything that wants to act on a gesture.
+
+        Rate-limited to the tracker's own rate: rewriting an identical document
+        at the stream rate would be pure churn.
+
+        `stale` is carried explicitly rather than left for a reader to work out
+        from the timestamp. A desktop client polling this file must not act on
+        a gesture from two seconds ago, and making that require arithmetic on
+        the reader's side is how it ends up not being done.
+        """
+        if result is None or now - self._hands_written < 1.0 / protocol.HANDS_HZ:
+            return
+        self._hands_written = now
+        doc = {
+            "schema": protocol.SCHEMA,
+            "updated_at": now,
+            "captured_at": result.at,
+            "age_s": round(now - result.at, 3),
+            "stale": not result.fresh(now),
+            "detect_ms": round(result.latency, 1),
+            "hands": [h.as_dict() for h in result.hands],
+            # Said in the file itself, because this is the file someone will
+            # find first when wiring a gesture to an action.
+            "note": ("observation only -- nothing in this project acts on it. "
+                     "See docs/SECURITY.md before wiring a gesture to a "
+                     "command."),
+        }
+        try:
+            _atomic_write(protocol.hands_path(),
+                          json.dumps(doc).encode())
+        except OSError:
+            pass
 
     def _push_ring(self, frame, wall: float, mono: float, now: float) -> None:
         # Preserve aspect here too. RING_SIZE is written landscape, but a
@@ -521,6 +619,7 @@ def main(argv: list[str] | None = None) -> int:
             svc._last_wake_try = now
             svc.ensure_awake()
         svc.apply_live_tuning(live)
+        svc.apply_tracking(live)
 
         svc.pump_frames(now)
 

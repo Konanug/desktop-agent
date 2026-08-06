@@ -18,7 +18,18 @@ StartLimitBurst=5
 [Service]
 Type=simple
 WorkingDirectory=/home/alanmyin/projects/hermes-pi
-ExecStart=/usr/bin/python3 -m camera
+
+# The cv-venv interpreter, NOT /usr/bin/python3. It is created with
+# --system-site-packages by scripts/install-cv.sh, so picamera2, Pillow and the
+# SYSTEM numpy 2.2.4 are all still the ones in use -- only mediapipe is added.
+# Verified that pip did not shadow numpy; picamera2 breaks against a different
+# one, and it would break at capture time rather than at import.
+#
+# If this venv is ever removed, hand tracking is the only thing that stops:
+# camera/hands.py degrades to unavailable and everything else -- captures for
+# Hermes, the ring buffer, the live stream -- carries on. /usr/bin/python3 -m
+# camera also still works for testing by hand.
+ExecStart=/home/alanmyin/.local/share/hermes-pi/cv-venv/bin/python -m camera
 
 # libcamera logs several INFO lines to stderr on every configure(). Without
 # this the journal fills with pipeline chatter and the one line that matters --
@@ -53,8 +64,16 @@ TimeoutStopSec=10
 #
 # The quota exists so the camera can never starve the display, which is the
 # service with a hard real-time-ish deadline (a late blit is a visible stutter).
-# Measured: ~6% streaming at 1024x576 plus short encode bursts.
-CPUQuota=60%
+#
+# Raised from 60% when hand tracking landed. MEASURED components, per second,
+# while a viewer is attached:
+#     stream, 960 long edge at 15 fps   ~40% of one core
+#     hand detection, ~60 ms at 10 Hz   ~60% of one core (its own thread)
+# That is ~100% of ONE core, on a machine with four. 200% leaves genuine
+# headroom rather than sitting on the limit, where the symptom would be a
+# stream that stutters under throttling and looks like a network fault.
+# Still Nice=5, so the display wins any contention regardless.
+CPUQuota=200%
 Nice=5
 
 StandardOutput=journal

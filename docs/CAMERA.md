@@ -374,13 +374,166 @@ connection here closed after **zero frames** until it became a `while` loop
 keyed on the sequence number. `tests/test_stream.py` pins it, and that test was
 confirmed to fail against the original.
 
+---
+
+## Hand tracking — BUILT as observation only (2026-08-05)
+
+`camera/hands.py`. MediaPipe hand landmarker: 21 points per hand, handedness,
+up to two hands, drawn on the live stream as a skeleton, a bounding box and a
+label (`RIGHT PEACE [2]`). Install with `scripts/install-cv.sh`.
+
+**Nothing acts on it.** See "This triggers nothing" at the end.
+
+### Field of view: raising resolution does not widen it
+
+Asked for as "more FoV for more detection", and worth separating because the
+answer is a hardware fact. MEASURED, `ScalerCrop` against the 4608x2592 sensor:
+
+| config | sensor mode | crop | share of sensor |
+|---|---|---|---|
+| forced 2304, main 1024x576 | 2304x1296 | (0,0,4608,2592) | **100%** |
+| forced 2304, main 1536x864 | 2304x1296 | (0,0,4608,2592) | **100%** |
+| forced 4608, main 1536x864 | 4608x2592 | (0,0,4608,2592) | **100%** |
+| **no forced mode**, main 1024x576 | 1536x864 | (768,432,3072,1728) | **44.4%** |
+
+The view is already as wide as this lens gives, at every resolution. Only the
+standard module is fitted (`imx708`, ~75° diagonal); widening it is an
+`imx708_wide` — a purchase, not a setting. The last row is the crop trap that
+`SENSOR_OUTPUT_SIZE` exists to prevent, and it is the one thing that genuinely
+does change FoV.
+
+What resolution *does* buy is detail. `STREAM_SIZE` went 1024x576 → **1536x864**
+and the stream output 640 → **960** long edge (540x960 portrait, ~32 KB/frame).
+
+### Why MediaPipe, when CLAUDE.md said not to
+
+That instruction was correct when written: no wheel existed. Re-checked and
+mediapipe 1.0.0 publishes `py3-none-manylinux_2_28_aarch64`, which installs
+cleanly on Python 3.13/aarch64.
+
+It lives in its own venv, created `--system-site-packages` because picamera2 is
+an apt package that cannot be pip-installed. **Verified that pip did not shadow
+the system numpy 2.2.4** — it readily installs its own, and picamera2 breaks
+against a different one at capture time rather than at import.
+`scripts/install-cv.sh` asserts this on every run. The renderer's
+no-dependencies property is untouched; only `hermes-camera` uses the venv.
+
+**The model is not in the wheel** — zero `.tflite` files; the bundled
+`hand_landmark/` directory contains only `handedness.txt` — so the installer
+fetches `hand_landmarker.task` (7.8 MB, float16) separately.
+
+### Measured
+
+```
+inference                      ~60 ms, and ~60 ms at EVERY input size
+   480x270  60.1 ms | 640x360  60.2 ms | 960x540  62.9 ms
+model load                     0.07 s
+detection with no hand present ~36 ms   (palm detector only)
+stream + tracking, one viewer  74.9% of ONE core (quota 200%, box has 4)
+   stream alone was            32.5% at the old 640; ~40% at 960
+display service, same window   1.02%   (unaffected)
+stream                         13.8 fps, 32.1 KB/frame, 444 KB/s
+```
+
+Inference being size-independent is the single most useful number here: it
+means the tracker is handed the frame the stream **already produced**, costing
+no extra capture, no extra resize and no extra copy.
+
+But 60 ms is two thirds of a core at 10 Hz and it **cannot run inline** — the
+capture loop paces a 15 fps stream and a 60 ms stall would wreck it. So
+detection runs on its own thread, which makes every result slightly stale by
+construction. A result older than `RESULT_MAX_AGE` (0.5 s) **is not drawn**: a
+box hovering where a hand used to be reads as a live track.
+
+### Reading fingers
+
+Extension is measured as **distance from the wrist** — tip further from the
+wrist than its middle joint — not by comparing y coordinates. "Tip is above the
+knuckle" is the usual shortcut and it is wrong here: the sensor is mounted 90°
+off, so an upright hand in the room is a sideways hand in the array. The thumb
+gets its own test against the pinky knuckle, because it folds across the palm
+rather than toward the wrist.
+
+VALIDATED, not reasoned: three poses × four rotations, composited into a real
+540x960 stream frame, **16/16**. A metric-3D variant using
+`hand_world_landmarks` was tried and scored **worse** (14/16), so the
+normalised coordinates stay.
+
+**Measurement trap.** Feeding unrelated still images to a tracker in
+`RunningMode.VIDEO` produces garbage — VIDEO carries a track between frames and
+uses the previous one as a prior, so a jump-cut breaks it. Measured that way
+the classifier scored **9/16 and looked broken**. It was the harness. Use
+`RunningMode.IMAGE` for stills, or give the tracker a steady clip.
+
+The vocabulary is deliberately small — FIST, OPEN, POINT, PEACE, THUMB, PINKY,
+CALL, THREE, FOUR, ROCK — and anything else reports `"3 UP"`, a count rather
+than the nearest name. Once something acts on these, a confident wrong label is
+the failure that matters.
+
+### The overlay never reaches Hermes
+
+Landmarks are drawn on the stream copy only. Everything the model sees is built
+from the untouched frame. If the overlay leaked into `camera_look`, the model
+would describe lines this process drew as things in the room — "the panel never
+invents state" in a place where it would be much harder to notice, because the
+picture would still look plausible. `tests/test_hands.py` asserts the source
+array is unchanged on both the resize and no-resize paths.
+
+(An explicit `.copy()` guard was written for this and then MEASURED to be dead
+code — Pillow's `fromarray` copies for RGB, 0 bytes differed with it removed.
+It was deleted; the test is what holds the guarantee.)
+
+### Where the observation goes
+
+`hands.json` in the runtime dir, and `/hands.json` on the stream server:
+
+```json
+{"captured_at": ..., "age_s": 0.107, "stale": false, "detect_ms": 36.4,
+ "hands": [{"handedness": "Right", "gesture": "PEACE", "fingers_up": 2,
+            "fingers": {...}, "bbox": [...], "landmarks": [[x, y], ...]}],
+ "note": "observation only -- nothing in this project acts on it."}
+```
+
+**Deliberately NOT in `status.json`.** That file's rule is state, never content
+— nothing derived from what the camera can see — so it can never become a side
+channel for the room. A gesture is unambiguously derived from what the camera
+can see. Keeping it in its own file makes this an explicit exception instead of
+a quiet erosion. `status.json` carries only whether tracking is *running*.
+
+`stale` is carried explicitly rather than left as arithmetic for the reader: a
+desktop client must not act on a gesture from two seconds ago, and making that
+require work on the reader's side is how it ends up not being done.
+
+### Tracking is bounded by an attached viewer
+
+It starts when someone opens the stream and stops when the last one leaves.
+Partly CPU — 60 ms a pass is not worth spending on an empty room — but mainly
+because a camera that continuously analyses what people in the room are *doing*
+is a materially different thing from one that streams pixels. Tying it to a
+viewer keeps it bounded by something the owner can see. `HERMES_CAMERA_HANDS=off`
+disables it entirely.
+
+### This triggers nothing
+
+No gesture here is wired to any action, and that is deliberate rather than
+unfinished. A gesture trigger is a path from "someone waves in the room" to
+"the agent runs a tool", and the Discord allowlist does not cover that path at
+all — anyone physically present would become an unauthenticated user of a bot
+that has a shell. `docs/SECURITY.md` has the design that would be needed first:
+an explicit bounded watch mode, a closed vocabulary mapped to a fixed action
+allowlist, and preferably a restricted toolset for that lane.
+
+This module publishes an observation. Deciding it means something is a separate
+job with a separate threat model.
+
 ## Still open
 
-- **Gestures are not built.** A gesture trigger is a path from "someone waves
-  in the room" to "the agent runs a tool", and the Discord allowlist does not
-  cover it at all. It needs its own security design first.
-- **The camera is currently aimed at the ceiling and out of focus.** Nothing
-  in software fixes that.
+- **Gesture TRIGGERS are not built** — tracking is, acting on it is not. See
+  "This triggers nothing" above.
+- **The camera has been aimed and focused** (2026-08-05). Colour is now
+  judgeable on a real scene and looks correct. The scene may read rotated;
+  `HERMES_CAMERA_ROTATE` (default 90) is the knob, and it affects human viewing
+  only — hand reading is rotation-invariant and validated at all four.
 - **D-1 matters more now.** The denied-user Discord test is still unrun, and
-  the allowlist is now the only thing between a stranger and a view of the
-  room.
+  there are now two paths to a view of the room: the Discord allowlist and the
+  stream token.

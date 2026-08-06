@@ -170,6 +170,28 @@ path everything else does.
 broke. Check `systemctl --user status hermes-camera` and whether the camera is
 muted (`~/.config/hermes-pi/camera.disabled`).
 
+### Hand tracking
+Set up (idempotent, safe to re-run):
+```bash
+cd ~/projects/hermes-pi
+./scripts/install-cv.sh              # cv-venv + hand_landmarker.task, then verifies
+systemctl --user restart hermes-camera
+```
+
+It runs **only while someone is watching the stream** and stops when the last
+viewer leaves. Landmarks appear on the live view; the reading is at
+`/hands.json?k=...` and in `/run/user/1000/hermes-camera/hands.json`.
+
+**No gesture triggers anything.** That is deliberate — see `docs/SECURITY.md`.
+
+Turn it off with `HERMES_CAMERA_HANDS=off` in the unit. If it will not start,
+the page and `status.json` carry the reason in `hands_error`; the usual causes
+are the venv missing (the unit's `ExecStart` points into it) or the model not
+downloaded.
+
+The service still runs fine on `/usr/bin/python3 -m camera` without any of
+this — hand tracking is the only thing that stops.
+
 ### Run the tests
 ```bash
 cd ~/projects/hermes-pi
@@ -180,6 +202,7 @@ python3 tests/test_camera_tools.py      # a stale frame is never shown as live
 python3 tests/test_camera_indicator.py  # unknown camera state fails toward ON
 python3 tests/test_usage_parse.py       # session figures never borrow the weekly line
 python3 tests/test_stream.py            # the room is not served without a token
+python3 tests/test_hands.py             # fingers read the same at every rotation
 ```
 
 ---

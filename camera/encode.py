@@ -125,7 +125,8 @@ def contact_sheet(frames: list[np.ndarray], labels: list[str],
 
 def to_stream_jpeg(frame: np.ndarray,
                    long_edge: int = protocol.STREAM_LONG_EDGE,
-                   quality: int = protocol.STREAM_QUALITY) -> bytes:
+                   quality: int = protocol.STREAM_QUALITY,
+                   overlay=None) -> bytes:
     """One frame of the live browser view.
 
     Deliberately NOT to_jpeg(). That function exists to keep an image under a
@@ -135,12 +136,28 @@ def to_stream_jpeg(frame: np.ndarray,
     the retry loop would only add latency. Fixed size, fixed quality, one pass.
 
     Aspect is preserved for the same reason it is everywhere else here: the
-    sensor is mounted rotated and frames are portrait (576x1024).
+    sensor is mounted rotated and frames are portrait.
+
+    `overlay` is called with the PIL image just before encoding, for hand
+    landmarks and boxes. It must not reach the frame Hermes sees: the model
+    would describe lines this process drew as things in the room, which is
+    "the panel never invents state" in a place where it would be far harder to
+    notice, because the picture would still look plausible.
+
+    That isolation is currently free -- `Image.fromarray` copies for RGB, so
+    the overlay cannot reach `frame` even when no resize intervenes. An
+    explicit `.copy()` was tried here and MEASURED to change nothing (0 bytes
+    differed with it removed), so it is not carried. The guarantee is held by
+    tests/test_hands.py instead, which asserts the source array is unchanged
+    on both the resize and no-resize paths and would catch a Pillow that
+    started aliasing.
     """
     img = Image.fromarray(frame)
     target = _fit_long_edge(img.size, long_edge)
     if img.size != target:
         img = img.resize(target, Image.BILINEAR)
+    if overlay is not None:
+        overlay(img)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality, optimize=False)
     return buf.getvalue()

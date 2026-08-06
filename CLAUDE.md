@@ -44,6 +44,7 @@ unit is dead.
 │   ├── encode.py         JPEG under a byte ceiling + RGB565 panel preview
 │   ├── protocol.py       the tmpfs contract shared with the plugin
 │   ├── stream.py         live MJPEG for a browser — TRUST BOUNDARY (token)
+│   ├── hands.py          MediaPipe hand/finger tracking — OBSERVATION ONLY
 │   └── __main__.py       lazy lifecycle, request serving, ring buffer, stream
 ├── display/              the renderer (systemd user service)
 │   ├── panel.py          ★ ONLY hardware-specific file. Swap to change panels.
@@ -62,7 +63,10 @@ unit is dead.
 │   ├── bench_spi.py      measures REAL SPI throughput
 │   ├── claude_usage.py   rolling 5h Claude token usage → usage.json
 │   └── camera_probe.py   verifies the camera is LIVE and measures its rate
-├── tests/                6 modules, all runnable as plain python3
+├── scripts/
+│   ├── install-hermes-ext.sh  symlinks hooks + plugins into ~/.hermes
+│   └── install-cv.sh          cv-venv (mediapipe) + hand_landmarker.task
+├── tests/                8 modules, all runnable as plain python3
 ├── systemd/              unit + drop-in templates
 └── docs/                 ARCHITECTURE, HARDWARE, SECURITY, RUNBOOK, DECISIONS,
                           STATE-CONTRACT, DEFERRED, CAMERA
@@ -255,6 +259,24 @@ reconfigure (which would cost ~300 ms and a re-settle). Measured cost in a dark
 room: mean level 94.0 → 65.3, with **gain already at max 16 so it cannot be
 bought back**. In normal light neither cap binds.
 
+**25. "Raise the resolution for a wider field of view" is a category error, and
+this camera is ALREADY at 100% of its sensor.** MEASURED at four configurations
+with `SENSOR_OUTPUT_SIZE` forced: `ScalerCrop` is `(0,0,4608,2592)` at
+1024x576, 1536x864 **and** 2048x1152. Resolution buys DETAIL, never more room.
+The FoV here is a lens fact — the standard `imx708` (~75° diagonal) is fitted;
+widening it is an `imx708_wide`, i.e. a purchase. (Without the forced mode,
+libcamera auto-selects 1536x864 and you get **44.4%** of the sensor — that is
+the crop trap already documented, and it is the one thing that genuinely does
+change FoV.)
+
+**26. Feeding unrelated stills to a `RunningMode.VIDEO` tracker measures
+nothing.** VIDEO mode carries a track between frames and uses the previous
+frame as a prior, so jump-cutting between different photos breaks it. The
+finger classifier scored **9/16 and looked broken** measured that way; given a
+steady clip per pose it is **16/16**, including at all four rotations and at
+the real 540x960 stream geometry. Use `RunningMode.IMAGE` for still fixtures,
+or give the tracker continuity.
+
 ---
 
 ## Conventions
@@ -284,6 +306,7 @@ python3 tests/test_camera_tools.py      # a stale frame is never shown as live
 python3 tests/test_camera_indicator.py  # unknown camera state fails toward ON
 python3 tests/test_usage_parse.py       # session figures never borrow the weekly line
 python3 tests/test_stream.py            # the room is not served without a token
+python3 tests/test_hands.py             # fingers read the same at every rotation
 ```
 
 `pytest` is NOT installed system-wide — every test module runs standalone via
@@ -360,6 +383,33 @@ core while watched**, display unaffected at 1.05%. Key properties:
   `docs/SECURITY.md` — this is the second network-facing socket on the box and
   the first that serves a view of the room.
 
+### Hand tracking — BUILT as observation only (2026-08-05)
+
+`camera/hands.py` runs MediaPipe's hand landmarker: 21 points per hand,
+handedness, up to two hands, drawn on the live stream as skeleton + bounding
+box + `RIGHT PEACE [2]`. Observation is published to `hands.json` and
+`/hands.json`.
+
+**It triggers nothing, and that is deliberate.** See below.
+
+**`Do not install mediapipe` is SUPERSEDED — it was right when written.** The
+blocker was that no wheel existed. Re-checked 2026-08-05: mediapipe 1.0.0
+publishes `py3-none-manylinux_2_28_aarch64` and installs cleanly. It lives in
+its own venv (`scripts/install-cv.sh`) created `--system-site-packages`, and
+**verified not to shadow the system numpy 2.2.4** — picamera2 breaks against a
+different one, at capture time rather than at import. The renderer's
+no-dependencies property is untouched; only `hermes-camera` uses the venv, via
+`ExecStart=~/.local/share/hermes-pi/cv-venv/bin/python`. **The model is NOT in
+the wheel** (zero `.tflite` files), so the installer fetches
+`hand_landmarker.task` separately.
+
+Measured: detection **~60 ms and ~60 ms at every input size** (mediapipe
+rescales internally), so resolution is nearly free for it but 10 Hz is already
+two thirds of a core. It runs on **its own thread** — inline it would stall the
+15 fps stream. Results are therefore always slightly stale, and a result older
+than `RESULT_MAX_AGE` (0.5 s) **is not drawn**, because a box hovering where a
+hand used to be reads as a live track.
+
 ### What is NOT built, and why
 
 **Gesture triggers.** A gesture is a path from "someone waves in the room" to
@@ -368,15 +418,16 @@ all — anyone physically present becomes an unauthenticated user of a bot with 
 shell. It needs its own security design first: an explicit, bounded, visibly
 indicated watch mode; a closed vocabulary mapped to a fixed action allowlist;
 and preferably a restricted toolset for that lane. See `docs/SECURITY.md`.
-
-**Do not install mediapipe** if that work happens: pip-only, no apt package,
-uncertain Python 3.13/aarch64 wheel, PEP 668 environment. `python3-onnxruntime`
-is in apt; convert a small hand model on the laptop.
+`hands.json` says so in the file itself, because that is the file someone will
+find first when wiring a gesture to a command.
 
 ### Physical
 
-The camera is currently **aimed at the ceiling and out of focus**. Nothing in
-software fixes that.
+The camera **has been aimed at the room and focused** (was ceiling-facing until
+2026-08-05). Colour is now judgeable and looks correct on a real scene.
+**The scene may read rotated** — `HERMES_CAMERA_ROTATE` (default 90) is the
+knob. It affects human viewing only: hand reading is rotation-invariant and was
+validated 16/16 at 0/90/180/270.
 
 ---
 

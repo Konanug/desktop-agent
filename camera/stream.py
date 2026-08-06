@@ -226,6 +226,7 @@ _PAGE = """<!doctype html>
   <span><b>VIEWERS</b> <span id="vw">-</span></span>
   <span><b>FPS</b> <span id="fps">-</span></span>
 </div>
+<div class="bar" id="hb"><span><b>HANDS</b> <span id="hs">-</span></span></div>
 <script>
  // Cache-bust once at load; the MJPEG connection itself stays open after that.
  document.getElementById('v').src = 'stream.mjpg' + location.search
@@ -243,9 +244,24 @@ _PAGE = """<!doctype html>
      // Trust the server's own staleness verdict rather than guessing from
      // whether the <img> looks like it updated.
      wrap.classList.toggle('stale', !s.live);
+     if (s.hands_error) { hs.textContent = s.hands_error; }
+     else if (!s.hands_tracking) { hs.textContent = 'not tracking'; }
    }catch(e){ wrap.classList.add('stale'); }
  }
+ async function pollHands(){
+   try{
+     const r = await fetch('hands.json' + location.search, {cache:'no-store'});
+     if(!r.ok){ return; }
+     const h = await r.json();
+     // Say "stale" rather than showing an old gesture as if it were current.
+     hs.textContent = h.stale ? 'stale'
+       : (h.hands.length === 0 ? 'none in view'
+          : h.hands.map(x => `${x.handedness} ${x.gesture} (${x.fingers_up})`)
+                   .join('   ') + `   ${h.detect_ms}ms`);
+   }catch(e){}
+ }
  poll(); setInterval(poll, 1000);
+ pollHands(); setInterval(pollHands, 300);
 </script>
 """
 
@@ -302,6 +318,8 @@ def _make_handler(buf: StreamBuffer, token: str, status_fn):
             elif path == "/status.json":
                 self._send(HTTPStatus.OK, "application/json",
                            json.dumps(status_fn()).encode())
+            elif path == "/hands.json":
+                self._hands()
             elif path == "/snapshot.jpg":
                 self._snapshot()
             elif path == "/stream.mjpg":
@@ -311,6 +329,23 @@ def _make_handler(buf: StreamBuffer, token: str, status_fn):
                            b"not found\n")
 
         # -- endpoints --------------------------------------------------
+        def _hands(self):
+            """Latest hand observation, for a client that wants to act on it.
+
+            Served from the file rather than from memory so there is exactly
+            one representation of this data and no chance of the HTTP view and
+            the on-disk view disagreeing. 404 when there is nothing -- an empty
+            hands list would say "no hands in view", which is a different claim
+            from "not tracking".
+            """
+            try:
+                body = protocol.hands_path().read_bytes()
+            except OSError:
+                self._send(HTTPStatus.NOT_FOUND, "application/json",
+                           b'{"error":"not tracking"}\n')
+                return
+            self._send(HTTPStatus.OK, "application/json", body)
+
         def _snapshot(self):
             """One frame. For curl, for a CV client that wants to poll.
 
