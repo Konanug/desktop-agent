@@ -412,6 +412,57 @@ def test_events_are_404_when_gestures_are_off():
         srv.stop()
 
 
+# -- the Windows client's struct layout -----------------------------------
+# Tested HERE, on the Pi, because the bug it encodes shipped and could not be
+# caught on the machine that runs it: --dry-run never calls SendInput, so the
+# first real keypress was the first time the struct was validated. The types
+# are explicit-width rather than ctypes.wintypes precisely so this can run.
+import ctypes                                                # noqa: E402
+
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "clients", "windows"))
+import hermes_gesture                                        # noqa: E402
+
+
+def test_input_struct_is_the_size_windows_validates_against():
+    """THE REGRESSION. SendInput checks its third argument against
+    sizeof(INPUT); anything else is ERROR_INVALID_PARAMETER (87) and nothing
+    is pressed. Observed in the field as `SendInput sent 0/2 (error 87)`."""
+    want = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
+    assert ctypes.sizeof(hermes_gesture.INPUT) == want
+
+
+def test_the_union_is_sized_by_mouseinput_not_keybdinput():
+    """WHY it was wrong. The union's size comes from its LARGEST member. Every
+    abbreviated copy of this snippet declares only `ki` and lands 8 bytes short
+    on x64 -- which is exactly what shipped here."""
+    assert (ctypes.sizeof(hermes_gesture.MOUSEINPUT)
+            > ctypes.sizeof(hermes_gesture.KEYBDINPUT)), \
+        "if this ever inverts, the union member that sets the size has changed"
+    assert (ctypes.sizeof(hermes_gesture._INPUTUNION)
+            == ctypes.sizeof(hermes_gesture.MOUSEINPUT))
+
+
+def test_ulong_ptr_is_pointer_sized():
+    """Declaring dwExtraInfo as DWORD is the other classic version of this
+    bug: it misaligns every field after it on x64."""
+    assert (ctypes.sizeof(hermes_gesture._ULONG_PTR)
+            == ctypes.sizeof(ctypes.c_void_p))
+
+
+def test_every_bound_key_name_resolves():
+    """The key table is the client's security boundary and is deliberately
+    fixed. A name in it that does not resolve to a virtual key code would be a
+    binding that silently does nothing."""
+    assert all(isinstance(v, int) and 0 < v < 0x100
+               for v in hermes_gesture.VK.values())
+    for name in ("play_pause", "next_track", "volume_mute", "ctrl", "f24"):
+        assert name in hermes_gesture.VK
+    assert hermes_gesture.EXTENDED <= set(hermes_gesture.VK.values()), \
+        "an extended-key code that is not in the table can never be sent"
+
+
 def _run() -> int:
     fails = 0
     for name, fn in sorted(globals().items()):

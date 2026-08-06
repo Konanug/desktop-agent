@@ -300,6 +300,21 @@ which tolerates one bad frame in every three.
 `tests/test_gestures.py:test_one_bad_frame_does_not_break_a_held_gesture` is
 the pin; it fires 0 events against the consecutive-run version.
 
+**30. `SendInput`'s `INPUT` union is sized by `MOUSEINPUT`, not by the member
+you use — and `--dry-run` cannot catch getting it wrong.** The union's size
+comes from its LARGEST member (MOUSEINPUT, 32 B on x64), so declaring only
+`ki` — which every abbreviated copy of this snippet online does — makes
+`sizeof(INPUT)` 32 instead of 40. Windows validates `SendInput`'s third
+argument against it and rejects **every** call with `ERROR_INVALID_PARAMETER`
+(87), pressing nothing. This SHIPPED, because dry-run never calls SendInput, so
+the first real keypress was the first validation. Its symptom was then misread
+as UIPI blocking an elevated window, which is a **different** error (5,
+`ERROR_ACCESS_DENIED`); the client now names both rather than guessing. Layout
+is asserted at import and pinned by `tests/test_gestures.py` — which runs on
+the **Pi**, because the client uses explicit-width ctypes types rather than
+`ctypes.wintypes` precisely so its structs can be tested off Windows. Both
+tests were verified to FAIL against the shipped version.
+
 **26. Feeding unrelated stills to a `RunningMode.VIDEO` tracker measures
 nothing.** VIDEO mode carries a track between frames and uses the previous
 frame as a prior, so jump-cutting between different photos breaks it. The

@@ -207,17 +207,28 @@ only — how you audition a gesture), and `run` (**refused unless
   the thing that *reports*.
 - **Refuses events older than 3 s**, and never asks for replay on reconnect.
 
-### Two traps worth keeping
+### Three traps worth keeping
 
+- **`sizeof(INPUT)` is set by `MOUSEINPUT`, the union's largest member — not by
+  the member you use.** Declaring only `ki` gives 32 bytes on x64 where Windows
+  expects 40, and it rejects **every** call with `ERROR_INVALID_PARAMETER` (87)
+  and presses nothing. **This shipped**, and `--dry-run` could not catch it,
+  because dry-run never calls `SendInput` — the first real keypress was the
+  first validation. Layout is now asserted at import and pinned by tests that
+  were verified to fail against the broken version.
 - **`ULONG_PTR` is 64-bit on x64.** Declaring `dwExtraInfo` as `DWORD` — the
-  mistake in nearly every copy of this snippet online — misaligns the union and
-  `SendInput` returns 0 with no error anyone thinks to check.
+  other classic version of the same bug — misaligns every field after it.
 - **`KEYEVENTF_EXTENDEDKEY`** is needed for media keys, arrows, Win and the
   edit/nav cluster. Getting it wrong is not a crash; it is a key that silently
   does nothing in some applications and works in others.
 
-If a focused window is elevated, UIPI blocks injection into it. The client says
-so rather than failing silently.
+The client names error 87 (its own bug) and error 5 (UIPI blocking injection
+into a focused elevated window) separately. They look identical from the
+outside and I read one as the other once already.
+
+The structs use explicit-width `ctypes` types rather than `ctypes.wintypes`, so
+`tests/test_gestures.py` can check their layout **on the Pi** — the machine
+that cannot run the client is the one that tests it.
 
 ---
 

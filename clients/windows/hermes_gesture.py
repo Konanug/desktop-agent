@@ -49,6 +49,7 @@ that reports" for its own safety limits.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import subprocess
@@ -109,6 +110,64 @@ _KEYEVENTF_KEYUP = 0x0002
 _KEYEVENTF_UNICODE = 0x0004
 _KEYEVENTF_EXTENDEDKEY = 0x0001
 
+# Explicit-width types rather than ctypes.wintypes. Identical on Windows, and
+# importable everywhere -- which is what lets the struct layout below be tested
+# on the Pi, where the bug it encodes was actually found.
+_WORD = ctypes.c_uint16
+_DWORD = ctypes.c_uint32
+_LONG = ctypes.c_int32
+# ULONG_PTR: 64-bit on x64, 32-bit on x86.
+_ULONG_PTR = (ctypes.c_uint64 if ctypes.sizeof(ctypes.c_void_p) == 8
+              else ctypes.c_uint32)
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", _WORD), ("wScan", _WORD), ("dwFlags", _DWORD),
+                ("time", _DWORD), ("dwExtraInfo", _ULONG_PTR)]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    """DECLARED BUT NEVER USED, AND IT HAS TO BE.
+
+    SendInput validates its third argument against sizeof(INPUT), and INPUT's
+    union is sized by its LARGEST member -- which is MOUSEINPUT (32 bytes on
+    x64), not KEYBDINPUT (24). Declaring only `ki`, which every abbreviated
+    copy of this snippet online does, makes sizeof(INPUT) 32 instead of 40.
+    Windows then rejects every call with ERROR_INVALID_PARAMETER (87) and
+    presses nothing.
+
+    OBSERVED: this shipped, and dry-run could not catch it because dry-run
+    never calls SendInput. Its symptom -- `SendInput sent 0/2 (error 87)` --
+    was initially misread here as UIPI blocking injection into an elevated
+    window, which is a DIFFERENT error (5, ERROR_ACCESS_DENIED). _send() now
+    distinguishes them rather than guessing.
+    """
+    _fields_ = [("dx", _LONG), ("dy", _LONG), ("mouseData", _DWORD),
+                ("dwFlags", _DWORD), ("time", _DWORD),
+                ("dwExtraInfo", _ULONG_PTR)]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [("uMsg", _DWORD), ("wParamL", _WORD), ("wParamH", _WORD)]
+
+
+class _INPUTUNION(ctypes.Union):
+    _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
+
+
+class INPUT(ctypes.Structure):
+    _anonymous_ = ("u",)
+    _fields_ = [("type", _DWORD), ("u", _INPUTUNION)]
+
+
+# The Win32 ABI fixes these. Checked at import so a layout mistake fails here,
+# loudly, instead of becoming a key that silently does not get pressed.
+EXPECTED_INPUT_SIZE = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
+assert ctypes.sizeof(INPUT) == EXPECTED_INPUT_SIZE, (
+    f"INPUT is {ctypes.sizeof(INPUT)} bytes, Windows expects "
+    f"{EXPECTED_INPUT_SIZE} -- SendInput would reject every call with "
+    f"ERROR_INVALID_PARAMETER")
+
 
 class Keyboard:
     """SendInput through ctypes. Built once; no-ops off Windows."""
@@ -117,49 +176,31 @@ class Keyboard:
         self.dry_run = dry_run or not IS_WINDOWS
         if self.dry_run:
             return
-        import ctypes
-        from ctypes import wintypes
-
-        # ULONG_PTR is 64-bit on x64 and 32-bit on x86. Declaring it as DWORD
-        # -- the mistake every copy of this snippet on the internet makes --
-        # misaligns the union on 64-bit and SendInput returns 0 with no error
-        # anyone would think to check.
-        ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 \
-            else ctypes.c_ulong
-
-        class KEYBDINPUT(ctypes.Structure):
-            _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
-                        ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
-                        ("dwExtraInfo", ULONG_PTR)]
-
-        class _U(ctypes.Union):
-            _fields_ = [("ki", KEYBDINPUT)]
-
-        class INPUT(ctypes.Structure):
-            _anonymous_ = ("u",)
-            _fields_ = [("type", wintypes.DWORD), ("u", _U)]
-
-        self._ctypes = ctypes
         self._INPUT = INPUT
         self._KEYBDINPUT = KEYBDINPUT
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
-        self._user32.SendInput.argtypes = (wintypes.UINT,
+        self._user32.SendInput.argtypes = (ctypes.c_uint,
                                            ctypes.POINTER(INPUT),
                                            ctypes.c_int)
-        self._user32.SendInput.restype = wintypes.UINT
+        self._user32.SendInput.restype = ctypes.c_uint
 
     def _send(self, inputs) -> None:
         n = len(inputs)
         arr = (self._INPUT * n)(*inputs)
-        sent = self._user32.SendInput(n, arr, self._ctypes.sizeof(self._INPUT))
-        if sent != n:
-            err = self._ctypes.get_last_error()
-            # The usual cause is UIPI: a normal-integrity process cannot inject
-            # into an elevated window. Say so rather than failing silently,
-            # because "it works everywhere except in my terminal" is otherwise
-            # a very confusing bug.
-            print(f"  ! SendInput sent {sent}/{n} (error {err}) -- a focused "
-                  f"elevated window will block injection", flush=True)
+        sent = self._user32.SendInput(n, arr, ctypes.sizeof(self._INPUT))
+        if sent == n:
+            return
+        err = ctypes.get_last_error()
+        # Name the two that actually happen. "Something went wrong" sends you
+        # looking in the wrong place -- as it did here once already.
+        why = {
+            5: "access denied -- the focused window is elevated and Windows "
+               "blocks injection into a higher-integrity process (UIPI). Run "
+               "the target app unelevated, or this client elevated.",
+            87: "invalid parameter -- sizeof(INPUT) is wrong for this "
+                "architecture. This is a bug in this file, not your setup.",
+        }.get(err, "unexpected")
+        print(f"  ! SendInput sent {sent}/{n} (error {err}): {why}", flush=True)
 
     def _key(self, vk: int, up: bool):
         flags = _KEYEVENTF_KEYUP if up else 0
