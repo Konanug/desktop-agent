@@ -41,7 +41,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from . import encode, hands, protocol, stream
+from . import encode, gestures, hands, protocol, stream
 from .sensor import Sensor
 
 POLL_ASLEEP = 0.10      # invisible against a ~434 ms cold wake
@@ -177,6 +177,15 @@ class Service:
         self._hands_written = 0.0
         self._last_hands_err: str | None = None
 
+        # Gesture EDGES, published to /events for a subscriber to act on.
+        # Nothing on this Pi acts on them and nothing here can reach Hermes --
+        # see camera/gestures.py and docs/GESTURES.md for why that line is
+        # where it is.
+        self.gate = gestures.GestureGate()
+        self.gestures_enabled = os.environ.get(
+            "HERMES_CAMERA_GESTURES", "on").lower() not in ("off", "0", "no")
+        self._last_gesture_at = 0.0
+
     # -- status ---------------------------------------------------------
     def status_doc(self) -> dict:
         """STATE, NEVER CONTENT. Same rule as state.json.
@@ -214,6 +223,9 @@ class Service:
             "ring_frames": len(self._ring),
             "idle_timeout": self.idle_timeout,
             "viewers": self.stream_buf.viewers,
+            # The subset actually reading frames. viewers - pixel_viewers is
+            # how many clients are watching the room for gestures alone.
+            "pixel_viewers": self.stream_buf.pixel_viewers,
             "stream_fps": round(self.stream_fps, 2),
             "live": frame is not None and time.time() - at <= stream.STALE_AFTER,
             # Whether tracking is RUNNING is state. What it saw is content, and
@@ -221,6 +233,12 @@ class Service:
             "hands_tracking": self.tracker.available and self.hands_enabled,
             "hands_error": self.tracker.error,
             "hands_ms": round(self.tracker.mean_ms, 1),
+            # Counts and a cursor are STATE. What the gesture WAS is content
+            # and lives on /events, which is the same split as hands.json.
+            "gestures_enabled": self.gestures_enabled,
+            "gesture_cursor": self.gate.log.cursor,
+            "gestures_fired": self.gate.fired,
+            "gestures_suppressed": self.gate.suppressed,
         }
 
     def publish_status(self, now: float, force: bool = False) -> None:
@@ -333,6 +351,12 @@ class Service:
         current, nor a hands.json a desktop client could act on."""
         self.tracker = hands.HandTracker(interval=1.0 / protocol.HANDS_HZ,
                                          max_hands=protocol.HANDS_MAX)
+        # Same reasoning one level up: a latched gesture and a ring of old
+        # edges from the previous session must not survive into the next one,
+        # or the first thing a reconnecting client does is act on a gesture
+        # somebody made before the camera was even closed.
+        self.gate.reset()
+        self._last_gesture_at = 0.0
         try:
             protocol.hands_path().unlink(missing_ok=True)
         except OSError:
@@ -351,16 +375,33 @@ class Service:
         if not self.sensor.is_open:
             return
         live = self.watching(now)
-        stream_due = live and now - self._last_stream >= 1.0 / protocol.STREAM_FPS
+        # ENCODING IS DRIVEN BY PIXEL VIEWERS, NOT BY VIEWERS. A gesture
+        # subscriber is a viewer in every sense that matters -- it holds the
+        # sensor open and lights the panel -- but it reads no frames, and
+        # encoding 15 fps of JPEG for it is pure waste. Before this split a
+        # gesture-only client cost 77.0% of a core.
+        pixels = live and self.stream_buf.pixel_viewers > 0
+        stream_due = pixels and now - self._last_stream >= 1.0 / protocol.STREAM_FPS
+        hands_due = (live and self.tracker.available
+                     and now - self._last_hands >= 1.0 / protocol.HANDS_HZ)
         ring_due = now - self._last_ring >= 1.0 / protocol.RING_HZ
-        if not (stream_due or ring_due):
+
+        # Rolling delivered rate, updated whether or not a frame went out, so a
+        # stream that has quietly stopped reads 0 rather than freezing at
+        # whatever it managed last.
+        if now - self._stream_window >= 1.0:
+            self.stream_fps = self._stream_count / (now - self._stream_window)
+            self._stream_count = 0
+            self._stream_window = now
+
+        if not (stream_due or hands_due or ring_due):
             return
 
-        # Ask the sensor for the largest size either consumer needs, and no
-        # more. Neither the stream nor the ring ever wants the full 1024 -- only
-        # a capture bound for the model does -- and correcting pixels nobody
-        # will look at is the most expensive thing this loop can do.
-        long_edge = (protocol.STREAM_LONG_EDGE if stream_due
+        # Ask the sensor for the largest size any consumer needs, and no more.
+        # Only a capture bound for the model wants the full size, and
+        # correcting pixels nobody will look at is the most expensive thing
+        # this loop can do.
+        long_edge = (protocol.STREAM_LONG_EDGE if (stream_due or hands_due)
                      else max(protocol.RING_SIZE))
         got = self.sensor.grab(long_edge=long_edge)
         if got is None:
@@ -368,37 +409,39 @@ class Service:
         frame, wall, mono = got
         self.last_frame_at = wall           # the watchdog's only evidence
 
+        if hands_due:
+            # Detection is size-insensitive (measured), so handing over the
+            # frame the loop already made costs no extra capture, no extra
+            # resize and no extra copy -- the thread just reads it.
+            self._last_hands = now
+            self.tracker.offer(frame, wall)
+
+        # Observations are published on the TRACKER's schedule, not the
+        # encoder's. They used to hang off the stream path, which meant a
+        # client subscribed only to gestures got none unless something else
+        # happened to be watching the pixels at the same time.
+        if live and self.tracker.available:
+            result = self.tracker.result()
+            self._publish_hands(result, now)
+            self._publish_gestures(result, now)
+        else:
+            result = None
+
         if stream_due:
-            # Hand the tracker the frame the stream already made. Detection is
-            # size-insensitive (measured), so this costs no extra capture, no
-            # extra resize and no extra copy -- the thread just reads it.
-            if (self.tracker.available
-                    and now - self._last_hands >= 1.0 / protocol.HANDS_HZ):
-                self._last_hands = now
-                self.tracker.offer(frame, wall)
-            self._push_stream(frame, wall, now)
+            self._push_stream(frame, wall, now, result)
         if ring_due:
             self._push_ring(frame, wall, mono, now)
 
-    def _push_stream(self, frame, wall: float, now: float) -> None:
-        result = self.tracker.result() if self.tracker.available else None
+    def _push_stream(self, frame, wall: float, now: float, result) -> None:
         overlay = (lambda img: hands.draw(img, result, now)) if result else None
         try:
             jpeg = encode.to_stream_jpeg(frame, overlay=overlay)
         except Exception as e:                              # pragma: no cover
             print(f"[camera] stream encode failed: {e}", flush=True)
             return
-        self._publish_hands(result, now)
         self.stream_buf.push(jpeg, wall)
         self._last_stream = now
-        # Delivered rate over a rolling second. Reported to the page because a
-        # number the viewer can see is the only way to notice the stream
-        # quietly running at half speed.
         self._stream_count += 1
-        if now - self._stream_window >= 1.0:
-            self.stream_fps = self._stream_count / (now - self._stream_window)
-            self._stream_count = 0
-            self._stream_window = now
 
     def _publish_hands(self, result, now: float) -> None:
         """Write hands.json for anything that wants to act on a gesture.
@@ -433,6 +476,33 @@ class Service:
                           json.dumps(doc).encode())
         except OSError:
             pass
+
+    def _publish_gestures(self, result, now: float) -> None:
+        """Feed the debouncer ONCE PER NEW RESULT.
+
+        This is called from the stream path, which runs at STREAM_FPS while the
+        tracker runs at HANDS_HZ -- so the same result is seen roughly 1.5
+        times. Feeding it twice would count as two observations and halve the
+        real hold time the debounce demands, turning "a deliberate gesture"
+        into "a hand that passed through a shape". Deduped on the FRAME's
+        timestamp, which the tracker copies through and never invents.
+
+        A stale result is not observed at all, for the reason hands.draw()
+        refuses to draw one: a gesture from a second ago is not evidence about
+        now. It also means the gate simply stops advancing if detection dies,
+        rather than latching on whatever it last saw.
+        """
+        if not self.gestures_enabled or result is None:
+            return
+        if result.at == self._last_gesture_at or not result.fresh(now):
+            return
+        self._last_gesture_at = result.at
+        for ev in self.gate.observe(result, now=now):
+            # One journal line per edge. This is the audit trail for anything
+            # a subscriber does off the back of it, and journald here is
+            # persistent -- see docs/GESTURES.md.
+            print(f"[camera] gesture seq={ev.seq} {ev.hand} {ev.gesture} "
+                  f"[{ev.fingers_up}] score={ev.score:.2f}", flush=True)
 
     def _push_ring(self, frame, wall: float, mono: float, now: float) -> None:
         # Preserve aspect here too. RING_SIZE is written landscape, but a
@@ -683,7 +753,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[camera] started, idle timeout {svc.idle_timeout:.0f}s, "
           f"power file {protocol.sensor_power_path()}", flush=True)
-    svc.stream_srv = stream.start(svc.stream_buf, svc.status_doc)
+    svc.stream_srv = stream.start(
+        svc.stream_buf, svc.status_doc,
+        svc.gate.log if svc.gestures_enabled else None)
     svc.start_watchdog()
     svc.publish_status(time.time(), force=True)
 

@@ -206,7 +206,8 @@ It runs **only while someone is watching the stream** and stops when the last
 viewer leaves. Landmarks appear on the live view; the reading is at
 `/hands.json?k=...` and in `/run/user/1000/hermes-camera/hands.json`.
 
-**No gesture triggers anything.** That is deliberate — see `docs/SECURITY.md`.
+**No gesture reaches Hermes.** That is deliberate — see `docs/SECURITY.md`.
+Gesture *edges* are published for a desktop client to act on; see below.
 
 Turn it off with `HERMES_CAMERA_HANDS=off` in the unit. If it will not start,
 the page and `status.json` carry the reason in `hands_error`; the usual causes
@@ -215,6 +216,38 @@ downloaded.
 
 The service still runs fine on `/usr/bin/python3 -m camera` without any of
 this — hand tracking is the only thing that stops.
+
+### Gesture events (→ the Windows laptop)
+
+Full write-up in `docs/GESTURES.md`. Day to day:
+
+```bash
+K=$(cat ~/.config/hermes-pi/camera-stream.token)
+curl -sN "http://127.0.0.1:8081/events?k=$K"                    # watch live
+curl -s  "http://127.0.0.1:8081/events.json?k=$K" | python3 -m json.tool
+journalctl --user -u hermes-camera | grep "gesture seq="        # every edge, ever
+```
+
+**Subscribing is what turns the camera on**, exactly like opening the stream
+page — a subscriber counts as a viewer and the panel shows `CAM` throughout.
+
+**Nothing fires.** In order:
+
+1. `status.json` → `hands_tracking` true? If not it is a tracking problem, not
+   a gesture one (see above).
+2. `status.json` → `gestures_enabled` true? `HERMES_CAMERA_GESTURES=off` in the
+   unit makes both endpoints 404.
+3. `gestures_suppressed` climbing while `gestures_fired` is not? That is the
+   rate limit, not detection — 0.8 s per hand, 30/min overall.
+4. Open the browser page and watch its **LAST EDGE** line. It shows the same
+   feed a client subscribes to, so it settles "is it the Pi or is it my client"
+   without running a client.
+
+**It fires once then goes quiet.** Correct. A gesture is latched until it
+clears — drop your hand and make it again.
+
+The client is `clients/windows/hermes_gesture.py` (stdlib only; see the README
+beside it). Run it with `--dry-run` after any config change.
 
 ### Run the tests
 ```bash
@@ -227,6 +260,7 @@ python3 tests/test_camera_indicator.py  # unknown camera state fails toward ON
 python3 tests/test_usage_parse.py       # session figures never borrow the weekly line
 python3 tests/test_stream.py            # the room is not served without a token
 python3 tests/test_hands.py             # fingers read the same at every rotation
+python3 tests/test_gestures.py          # a held gesture fires once; limits cannot wedge
 ```
 
 ---

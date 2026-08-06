@@ -513,23 +513,25 @@ is a materially different thing from one that streams pixels. Tying it to a
 viewer keeps it bounded by something the owner can see. `HERMES_CAMERA_HANDS=off`
 disables it entirely.
 
-### This triggers nothing
+### This triggers nothing *here*
 
-No gesture here is wired to any action, and that is deliberate rather than
-unfinished. A gesture trigger is a path from "someone waves in the room" to
-"the agent runs a tool", and the Discord allowlist does not cover that path at
-all — anyone physically present would become an unauthenticated user of a bot
-that has a shell. `docs/SECURITY.md` has the design that would be needed first:
-an explicit bounded watch mode, a closed vocabulary mapped to a fixed action
-allowlist, and preferably a restricted toolset for that lane.
+No gesture in this module is wired to any action. `camera/gestures.py` turns
+these observations into debounced **edges** and publishes them on `/events`;
+what an edge *means* is decided by whatever subscribes, on its own machine.
+See **`docs/GESTURES.md`**.
+
+Hermes remains off that path entirely and cannot be reached from it. The
+deliberate non-build is "someone waves → *the agent* runs a tool", and the
+Discord allowlist still does not cover it — anyone physically present would
+become an unauthenticated user of a bot that has a shell.
 
 This module publishes an observation. Deciding it means something is a separate
 job with a separate threat model.
 
 ## Still open
 
-- **Gesture TRIGGERS are not built** — tracking is, acting on it is not. See
-  "This triggers nothing" above.
+- **Gesture → Hermes is not built** — see `docs/GESTURES.md` and
+  `docs/SECURITY.md`. Gesture → the owner's laptop is (2026-08-06).
 - **The camera has been aimed and focused** (2026-08-05). Colour is now
   judgeable on a real scene and looks correct. The scene may read rotated;
   `HERMES_CAMERA_ROTATE` (default 90) is the knob, and it affects human viewing

@@ -1,0 +1,442 @@
+r"""Drive Windows 11 from hand gestures seen by the Raspberry Pi.
+
+    python hermes_gesture.py --config gestures.json --dry-run     # ALWAYS FIRST
+    python hermes_gesture.py --config gestures.json
+
+Subscribes to the Pi's /events feed and presses keys on this machine. Nothing
+else. Requires Python 3.8+ and NOTHING ELSE -- no pip install, no admin. Input
+is synthesised through SendInput via ctypes, which is the same API the OS's own
+accessibility tooling uses.
+
+WHICH WAY THE CONTROL FLOWS, AND WHY IT MATTERS
+
+This laptop PULLS. The Pi cannot connect to it, cannot address it, and does not
+know it exists until it subscribes. Every decision about what a gesture MEANS
+is taken here, from a config file on this disk. So the worst a compromised or
+malfunctioning Pi can do is lie about what gesture it saw -- and a lie still
+only reaches the small, fixed set of actions in that config.
+
+That is the entire reason the mapping is not on the Pi. It would have been less
+code there.
+
+WHAT A CAMERA CANNOT DO
+
+A camera authenticates nobody. Anyone standing in that room can make these
+gestures, including someone you did not invite, including someone on a video
+call being displayed on a screen the camera can see. Choose bindings you would
+be relaxed about a stranger triggering. Pausing music is a fine thing to hand
+to the room. Anything that types into a focused window, closes an app without
+saving, or runs a command is a different proposition, and the config has to opt
+into that explicitly -- see `allow_run` below.
+
+REPLAY IS REFUSED, TWICE
+
+  * On connect the client asks for FUTURE events only. It does not ask the Pi
+    what it missed. Waking your laptop must not fire a burst of actions from
+    gestures made while it was asleep.
+  * Every event is checked against `age_s`, which the Pi computes from its own
+    monotonic clock and not from a wall clock the two machines would have to
+    agree on. The Pi has no battery-backed RTC and is confidently wrong about
+    the time for ~34 s after a boot; comparing timestamps across the two
+    machines would reject everything during that window and silently accept
+    everything if the skew went the other way.
+
+Both bounds are independent of the Pi's own rate limiting, which this client
+does not trust, because "the thing that acts" should never rely on "the thing
+that reports" for its own safety limits.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+IS_WINDOWS = sys.platform == "win32"
+
+# An event older than this is not acted on. Generous enough to survive a slow
+# LAN and a GC pause, far too short to replay anything meaningful.
+MAX_AGE = 3.0
+
+# Reconnect backoff. Capped low: the failure this is most likely to see is the
+# Pi's camera service restarting (3 s) or the laptop's wifi coming back.
+BACKOFF_MIN = 1.0
+BACKOFF_MAX = 20.0
+
+# Read timeout on the event socket. Must be longer than the server's heartbeat
+# (10 s) or every quiet period would look like a dead connection.
+READ_TIMEOUT = 30.0
+
+
+# -- input synthesis -------------------------------------------------------
+# Virtual key codes. Deliberately a FIXED TABLE and not "look up any key the
+# config names": the config is the security boundary for this program, and a
+# boundary you can extend by typing a hex number in a JSON file is not one.
+VK = {
+    # media and volume -- the benign default vocabulary
+    "play_pause": 0xB3, "next_track": 0xB0, "prev_track": 0xB1,
+    "stop_media": 0xB2, "volume_up": 0xAF, "volume_down": 0xAE,
+    "volume_mute": 0xAD,
+    # modifiers
+    "ctrl": 0x11, "shift": 0x10, "alt": 0x12, "win": 0x5B,
+    # navigation
+    "tab": 0x09, "esc": 0x1B, "escape": 0x1B, "space": 0x20,
+    "enter": 0x0D, "backspace": 0x08, "delete": 0x2E, "insert": 0x2D,
+    "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
+    "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28,
+    # letters and digits
+    **{c: ord(c.upper()) for c in "abcdefghijklmnopqrstuvwxyz"},
+    **{c: ord(c) for c in "0123456789"},
+    # function keys
+    **{f"f{i}": 0x6F + i for i in range(1, 25)},
+}
+
+# Keys that need KEYEVENTF_EXTENDEDKEY. Getting this wrong is not a crash, it
+# is a key that quietly does nothing in some applications and works in others.
+EXTENDED = {
+    0xB3, 0xB0, 0xB1, 0xB2, 0xAF, 0xAE, 0xAD,          # media/volume
+    0x5B, 0x2E, 0x2D, 0x24, 0x23, 0x21, 0x22,          # win, edit, nav
+    0x25, 0x26, 0x27, 0x28,                            # arrows
+}
+
+_KEYEVENTF_KEYUP = 0x0002
+_KEYEVENTF_UNICODE = 0x0004
+_KEYEVENTF_EXTENDEDKEY = 0x0001
+
+
+class Keyboard:
+    """SendInput through ctypes. Built once; no-ops off Windows."""
+
+    def __init__(self, dry_run: bool = False):
+        self.dry_run = dry_run or not IS_WINDOWS
+        if self.dry_run:
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        # ULONG_PTR is 64-bit on x64 and 32-bit on x86. Declaring it as DWORD
+        # -- the mistake every copy of this snippet on the internet makes --
+        # misaligns the union on 64-bit and SendInput returns 0 with no error
+        # anyone would think to check.
+        ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 \
+            else ctypes.c_ulong
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                        ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ULONG_PTR)]
+
+        class _U(ctypes.Union):
+            _fields_ = [("ki", KEYBDINPUT)]
+
+        class INPUT(ctypes.Structure):
+            _anonymous_ = ("u",)
+            _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+        self._ctypes = ctypes
+        self._INPUT = INPUT
+        self._KEYBDINPUT = KEYBDINPUT
+        self._user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self._user32.SendInput.argtypes = (wintypes.UINT,
+                                           ctypes.POINTER(INPUT),
+                                           ctypes.c_int)
+        self._user32.SendInput.restype = wintypes.UINT
+
+    def _send(self, inputs) -> None:
+        n = len(inputs)
+        arr = (self._INPUT * n)(*inputs)
+        sent = self._user32.SendInput(n, arr, self._ctypes.sizeof(self._INPUT))
+        if sent != n:
+            err = self._ctypes.get_last_error()
+            # The usual cause is UIPI: a normal-integrity process cannot inject
+            # into an elevated window. Say so rather than failing silently,
+            # because "it works everywhere except in my terminal" is otherwise
+            # a very confusing bug.
+            print(f"  ! SendInput sent {sent}/{n} (error {err}) -- a focused "
+                  f"elevated window will block injection", flush=True)
+
+    def _key(self, vk: int, up: bool):
+        flags = _KEYEVENTF_KEYUP if up else 0
+        if vk in EXTENDED:
+            flags |= _KEYEVENTF_EXTENDEDKEY
+        return self._INPUT(type=1, ki=self._KEYBDINPUT(
+            wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=0))
+
+    def combo(self, names: list[str]) -> None:
+        """Press modifiers, tap the final key, release in reverse order."""
+        vks = [VK[n] for n in names]
+        if self.dry_run:
+            print(f"  [dry-run] key {'+'.join(names)}", flush=True)
+            return
+        seq = [self._key(v, False) for v in vks]
+        seq += [self._key(v, True) for v in reversed(vks)]
+        self._send(seq)
+
+    def text(self, s: str) -> None:
+        """Type a literal string as Unicode.
+
+        KEYEVENTF_UNICODE bypasses the keyboard layout entirely, so this types
+        the same characters on a US and a UK layout. Surrogate pairs are sent
+        as two inputs, which is what the API expects.
+        """
+        if self.dry_run:
+            print(f"  [dry-run] text {s!r}", flush=True)
+            return
+        seq = []
+        raw = s.encode("utf-16-le")
+        for i in range(0, len(raw), 2):
+            code = int.from_bytes(raw[i:i + 2], "little")
+            for up in (False, True):
+                flags = _KEYEVENTF_UNICODE | (_KEYEVENTF_KEYUP if up else 0)
+                seq.append(self._INPUT(type=1, ki=self._KEYBDINPUT(
+                    wVk=0, wScan=code, dwFlags=flags, time=0, dwExtraInfo=0)))
+        if seq:
+            self._send(seq)
+
+
+# -- actions ---------------------------------------------------------------
+def parse_combo(spec: str) -> list[str]:
+    """'ctrl+shift+m' -> ['ctrl','shift','m']. Raises on anything unknown."""
+    names = [p.strip().lower() for p in str(spec).split("+") if p.strip()]
+    if not names:
+        raise ValueError("empty key spec")
+    bad = [n for n in names if n not in VK]
+    if bad:
+        raise ValueError(f"unknown key(s) {bad} -- see VK in this file for the "
+                         f"full list of what is allowed")
+    return names
+
+
+class Dispatcher:
+    def __init__(self, config: dict, kb: Keyboard):
+        self.kb = kb
+        self.allow_run = bool(config.get("allow_run", False))
+        self.cooldown = float(config.get("cooldown_s", 1.0))
+        self._last: dict[str, float] = {}
+        self.bindings = {}
+        for key, action in (config.get("bindings") or {}).items():
+            self.bindings[key.strip().upper()] = self._validate(key, action)
+
+    def _validate(self, key: str, action) -> dict:
+        """Fail at STARTUP, not on the gesture.
+
+        A typo that only surfaces the first time you make the shape is a typo
+        you find while waving at a camera wondering whether the camera is
+        broken.
+        """
+        if isinstance(action, str):
+            action = {"type": "key", "keys": action}
+        kind = action.get("type")
+        if kind == "key":
+            parse_combo(action["keys"])
+        elif kind == "text":
+            if not isinstance(action.get("text"), str):
+                raise ValueError(f"{key}: 'text' action needs a string 'text'")
+        elif kind == "run":
+            if not self.allow_run:
+                raise ValueError(
+                    f"{key}: 'run' actions are refused unless the config sets "
+                    f'"allow_run": true. Read the header of this file first -- '
+                    f"anyone standing in that room can trigger this.")
+            if not isinstance(action.get("command"), list):
+                raise ValueError(f"{key}: 'command' must be a LIST of "
+                                 f"arguments, never a shell string")
+        elif kind == "log":
+            pass
+        else:
+            raise ValueError(f"{key}: unknown action type {kind!r}")
+        return action
+
+    def lookup(self, hand: str, gesture: str):
+        """'RIGHT PEACE' beats 'PEACE'. Specific wins."""
+        for key in (f"{hand} {gesture}".upper(), gesture.upper()):
+            if key in self.bindings:
+                return key, self.bindings[key]
+        return None, None
+
+    def fire(self, ev: dict) -> bool:
+        key, action = self.lookup(ev.get("hand", "?"), ev.get("gesture", ""))
+        if action is None:
+            print(f"  {ev['hand']} {ev['gesture']} -- no binding", flush=True)
+            return False
+        now = time.monotonic()
+        # A per-binding cooldown, independent of the Pi's rate limit. The thing
+        # that ACTS keeps its own bounds; it does not delegate them upstream.
+        if now - self._last.get(key, 0.0) < self.cooldown:
+            print(f"  {key} -- cooling down", flush=True)
+            return False
+        self._last[key] = now
+        kind = action["type"]
+        print(f"  {key} -> {kind} "
+              f"{action.get('keys') or action.get('command') or ''}", flush=True)
+        try:
+            if kind == "key":
+                self.kb.combo(parse_combo(action["keys"]))
+            elif kind == "text":
+                self.kb.text(action["text"])
+            elif kind == "run":
+                if self.kb.dry_run:
+                    print(f"  [dry-run] run {action['command']}", flush=True)
+                else:
+                    subprocess.Popen(action["command"], shell=False)
+            # "log" does nothing by design -- it is how you audition a gesture.
+        except Exception as e:
+            print(f"  ! action failed: {e.__class__.__name__}: {e}", flush=True)
+            return False
+        return True
+
+
+# -- the feed --------------------------------------------------------------
+def parse_sse(stream, on_event, on_hello=None) -> None:
+    """Minimal SSE reader. Blocks until the connection dies.
+
+    Written out rather than pulled from a library because the whole client is
+    deliberately dependency-free, and because SSE framing is genuinely this
+    small: blank line ends a message, `event:` names it, `data:` accumulates.
+    Lines starting with ':' are comments -- the server's heartbeat -- and their
+    only job is to make a dead socket raise here instead of hanging forever.
+    """
+    name, data = "message", []
+    for raw in stream:
+        line = raw.decode("utf-8", "replace").rstrip("\r\n")
+        if not line:
+            if data:
+                payload = "\n".join(data)
+                try:
+                    doc = json.loads(payload)
+                except json.JSONDecodeError:
+                    doc = None
+                if doc is not None:
+                    if name == "gesture":
+                        on_event(doc)
+                    elif name == "hello" and on_hello:
+                        on_hello(doc)
+            name, data = "message", []
+        elif line.startswith(":"):
+            continue
+        elif line.startswith("event:"):
+            name = line[6:].strip()
+        elif line.startswith("data:"):
+            data.append(line[5:].lstrip())
+    raise ConnectionError("event stream ended")
+
+
+def run(cfg: dict, disp: Dispatcher, once: bool = False) -> int:
+    base = cfg["url"].rstrip("/")
+    token = cfg.get("token") or ""
+    url = base + "/events" + (f"?k={urllib.parse.quote(token)}" if token else "")
+    backoff = BACKOFF_MIN
+    seen = 0
+
+    def on_hello(doc):
+        nonlocal backoff
+        backoff = BACKOFF_MIN
+        print(f"connected  cursor={doc.get('cursor')} "
+              f"epoch={doc.get('epoch')}", flush=True)
+
+    def on_event(ev):
+        nonlocal seen
+        seen += 1
+        age = ev.get("age_s")
+        stamp = time.strftime("%H:%M:%S")
+        print(f"[{stamp}] #{ev.get('seq')} {ev.get('hand')} "
+              f"{ev.get('gesture')} [{ev.get('fingers_up')}] "
+              f"age={age}s", flush=True)
+        # Age is computed by the Pi from its own monotonic clock, so this
+        # comparison never involves the two machines agreeing about the time.
+        if age is None or age > MAX_AGE:
+            print(f"  refused: {age}s old (limit {MAX_AGE}s)", flush=True)
+            return
+        disp.fire(ev)
+
+    while True:
+        try:
+            req = urllib.request.Request(url, headers={"Accept":
+                                                       "text/event-stream"})
+            with urllib.request.urlopen(req, timeout=READ_TIMEOUT) as r:
+                parse_sse(r, on_event, on_hello)
+        except KeyboardInterrupt:
+            print("\nstopped", flush=True)
+            return 0
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                print("403 forbidden -- the token in your config does not "
+                      "match the Pi's ~/.config/hermes-pi/camera-stream.token",
+                      flush=True)
+                return 2
+            if e.code == 404:
+                print("404 -- the Pi has gestures disabled "
+                      "(HERMES_CAMERA_GESTURES=off)", flush=True)
+                return 2
+            print(f"http {e.code}: {e.reason}", flush=True)
+        except Exception as e:
+            print(f"disconnected ({e.__class__.__name__}: {e})", flush=True)
+        if once:
+            return 1
+        print(f"reconnecting in {backoff:.0f}s "
+              f"(no replay -- missed gestures stay missed)", flush=True)
+        try:
+            time.sleep(backoff)
+        except KeyboardInterrupt:
+            return 0
+        backoff = min(BACKOFF_MAX, backoff * 2)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="hermes_gesture",
+        description="Act on hand gestures seen by the Hermes Pi camera.")
+    ap.add_argument("--config", default="gestures.json")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="print what WOULD be pressed and press nothing. "
+                         "Run this first, every time you change bindings.")
+    ap.add_argument("--once", action="store_true",
+                    help="do not reconnect; exit when the stream ends")
+    args = ap.parse_args(argv)
+
+    path = os.path.abspath(args.config)
+    try:
+        cfg = json.loads(open(path, encoding="utf-8").read())
+    except OSError as e:
+        print(f"cannot read {path}: {e}", flush=True)
+        return 2
+    except json.JSONDecodeError as e:
+        print(f"{path} is not valid JSON: {e}", flush=True)
+        return 2
+    if not cfg.get("url"):
+        print(f"{path} needs a \"url\", e.g. http://192.168.2.56:8081",
+              flush=True)
+        return 2
+
+    kb = Keyboard(dry_run=args.dry_run)
+    try:
+        disp = Dispatcher(cfg, kb)
+    except (ValueError, KeyError) as e:
+        print(f"config error: {e}", flush=True)
+        return 2
+
+    if not IS_WINDOWS and not args.dry_run:
+        print(f"not running on Windows ({sys.platform}) -- forcing --dry-run",
+              flush=True)
+    print(f"hermes-gesture  {cfg['url']}  "
+          f"{len(disp.bindings)} bindings  cooldown {disp.cooldown}s"
+          f"{'  [DRY RUN]' if kb.dry_run else ''}", flush=True)
+    for k, a in sorted(disp.bindings.items()):
+        print(f"  {k:16s} {a['type']:5s} "
+              f"{a.get('keys') or a.get('text') or a.get('command') or ''}",
+              flush=True)
+    print("Ctrl-C to stop.\n", flush=True)
+    return run(cfg, disp, once=args.once)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)

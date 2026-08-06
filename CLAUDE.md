@@ -43,8 +43,9 @@ unit is dead.
 │   ├── sensor.py         ★ ONLY picamera2 file. Swap to change cameras.
 │   ├── encode.py         JPEG under a byte ceiling + RGB565 panel preview
 │   ├── protocol.py       the tmpfs contract shared with the plugin
-│   ├── stream.py         live MJPEG for a browser — TRUST BOUNDARY (token)
+│   ├── stream.py         live MJPEG + /events SSE — TRUST BOUNDARY (token)
 │   ├── hands.py          MediaPipe hand/finger tracking — OBSERVATION ONLY
+│   ├── gestures.py       level → debounced EDGE; publishes, never acts
 │   └── __main__.py       lazy lifecycle, request serving, ring buffer, stream
 ├── display/              the renderer (systemd user service)
 │   ├── panel.py          ★ ONLY hardware-specific file. Swap to change panels.
@@ -66,7 +67,8 @@ unit is dead.
 ├── scripts/
 │   ├── install-hermes-ext.sh  symlinks hooks + plugins into ~/.hermes
 │   └── install-cv.sh          cv-venv (mediapipe) + hand_landmarker.task
-├── tests/                8 modules, all runnable as plain python3
+├── clients/windows/      hermes_gesture.py — STDLIB ONLY, runs on the laptop
+├── tests/                9 modules, all runnable as plain python3
 ├── systemd/              unit + drop-in templates
 └── docs/                 ARCHITECTURE, HARDWARE, SECURITY, RUNBOOK, DECISIONS,
                           STATE-CONTRACT, DEFERRED, CAMERA
@@ -282,6 +284,22 @@ exits 70 for systemd rather than hanging silently. Root cause of that wedge is
 **still unknown** and it has not reproduced, including under deliberate
 browser-like load — the fix makes it loud and self-healing, not impossible.
 
+**28. `time.monotonic()`'s ORIGIN IS UNDEFINED, so 0.0 is not a safe "never"
+sentinel.** `GestureGate` used `_last_fire = 0.0` and compared `mono -
+_last_fire < min_gap`. On this Pi monotonic starts large so it worked; under
+test, where time starts at 0, **the very first gesture of every session was
+silently swallowed**. Anything that means "has not happened yet" must be `None`
+and be tested for, not a number that happens to be far away on one machine.
+
+**29. A debounce built on CONSECUTIVE agreement never commits under flicker.**
+The obvious shape — "N frames in a row agree" — is reset by a single
+mis-detected frame, and hand detection mis-reads frames routinely (motion blur,
+a hand turning). At any flicker rate near N it commits *never*, not late.
+`camera/gestures.py` requires a MAJORITY of a sliding window (3 of 5) instead,
+which tolerates one bad frame in every three.
+`tests/test_gestures.py:test_one_bad_frame_does_not_break_a_held_gesture` is
+the pin; it fires 0 events against the consecutive-run version.
+
 **26. Feeding unrelated stills to a `RunningMode.VIDEO` tracker measures
 nothing.** VIDEO mode carries a track between frames and uses the previous
 frame as a prior, so jump-cutting between different photos breaks it. The
@@ -320,6 +338,7 @@ python3 tests/test_camera_indicator.py  # unknown camera state fails toward ON
 python3 tests/test_usage_parse.py       # session figures never borrow the weekly line
 python3 tests/test_stream.py            # the room is not served without a token
 python3 tests/test_hands.py             # fingers read the same at every rotation
+python3 tests/test_gestures.py          # a held gesture fires once; limits cannot wedge
 ```
 
 `pytest` is NOT installed system-wide — every test module runs standalone via
@@ -423,16 +442,40 @@ two thirds of a core. It runs on **its own thread** — inline it would stall th
 than `RESULT_MAX_AGE` (0.5 s) **is not drawn**, because a box hovering where a
 hand used to be reads as a live track.
 
-### What is NOT built, and why
+### Gestures → the Windows laptop — BUILT (2026-08-06)
 
-**Gesture triggers.** A gesture is a path from "someone waves in the room" to
-"the agent runs a tool", and the Discord allowlist does not cover that path at
-all — anyone physically present becomes an unauthenticated user of a bot with a
-shell. It needs its own security design first: an explicit, bounded, visibly
-indicated watch mode; a closed vocabulary mapped to a fixed action allowlist;
-and preferably a restricted toolset for that lane. See `docs/SECURITY.md`.
-`hands.json` says so in the file itself, because that is the file someone will
-find first when wiring a gesture to a command.
+`camera/gestures.py` turns the LEVEL in `hands.json` into an **edge** and
+publishes it on `/events` (SSE, tcp/8081, same token). `clients/windows/
+hermes_gesture.py` subscribes and presses keys — **stdlib only, no pip install
+on the laptop**. Full write-up: **`docs/GESTURES.md`**.
+
+**Hermes is not on this path and cannot be reached from it**, so the deliberate
+non-build below still stands. Load-bearing properties:
+
+- **The laptop PULLS and owns the mapping.** The Pi cannot address it. Worst
+  case from a compromised Pi is a *lie about a gesture*, which still only
+  reaches the fixed action list in the laptop's own config.
+- **A subscriber is a viewer** — wakes the sensor, keeps tracking alive, lights
+  `CAM`. No receiving gestures from a room without being counted as watching it.
+- **Debounce 3-of-5, latch until cleared, sliding limits** (0.8 s per hand,
+  30/min global). Per-hand vs global is deliberate: a global min gap would drop
+  half of every two-handed gesture.
+- **A rate-limited gesture is DROPPED, not deferred**, and no replay on
+  reconnect. `age_s` is monotonic-derived, never a cross-machine timestamp.
+
+### What is STILL not built, and why
+
+**Gesture → Hermes.** A gesture reaching *the agent* is a path from "someone
+waves in the room" to "a bot with a shell runs a tool", and the Discord
+allowlist does not cover it at all — a camera authenticates nobody. It needs its
+own security design first: an explicit, bounded, visibly indicated watch mode; a
+closed vocabulary mapped to a fixed action allowlist; limits far tighter than
+the laptop lane; and preferably a restricted toolset for that lane, which is
+**unconfirmed to be possible** for `webhook` (`platform_toolsets.acp` is a
+documented counter-example that does not narrow ACP). `deliver_only: true`
+skips the agent entirely and is the safest available shape. See
+`docs/SECURITY.md`. `hands.json` says so in the file itself, because that is
+the file someone will find first.
 
 ### Physical
 
@@ -491,3 +534,4 @@ without being asked. What was learned and is worth keeping:
 | `docs/DEFERRED.md` | what is knowingly not done |
 | `docs/CAMERA.md` | Camera: how it works, measured rates, context cost, privacy |
 | `docs/CAMERA-CONTRACT.md` | the tmpfs interface between camera service and plugin |
+| `docs/GESTURES.md` | edges, the `/events` wire, and the Windows client |

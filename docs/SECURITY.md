@@ -221,11 +221,49 @@ compromised, and rely on the allowlist and the physical controls instead.
 - The camera tools take **no path, filename or URL** from the model — only a
   reason and a detail level.
 
-### Not built, and why
+### Gestures → the laptop — BUILT 2026-08-06, and it does NOT cross the line
 
-**Gesture triggers.** A gesture is a path from "someone waves in the room" to
-"the agent runs a tool", and the Discord allowlist does not cover that path at
-all — anyone physically present would become an unauthenticated user of a bot
-with a shell. If it is ever built it needs: an explicit, bounded, visibly
-indicated watch mode; a closed vocabulary mapped to a fixed action allowlist;
-and ideally a restricted toolset for that lane. Do not add it casually.
+Debounced gesture **edges** are published on `/events` (SSE, tcp/8081, same
+token as the pixels) and a Windows client acts on them. `docs/GESTURES.md`.
+
+**Hermes is not on this path and cannot be reached from it.** Nothing here can
+run a tool. What was deliberately not built — and still is not — is the path
+from "someone waves in the room" to "*the agent* runs a tool".
+
+Properties that keep it on the right side of that line:
+
+- **The Pi publishes; the laptop decides.** The laptop pulls over the LAN. The
+  Pi cannot connect to it, address it, or know it exists until it subscribes.
+  The gesture→action mapping is a file on the laptop's disk. The worst a
+  compromised Pi can do is **lie about what gesture it saw**, and a lie still
+  only reaches the fixed set of actions in that config.
+- **A subscriber is a viewer.** It holds the sensor open, keeps tracking
+  running and lights the panel's `CAM` indicator. There is no way to receive
+  gestures from the room without also being counted as watching it.
+- **One journal line per edge**, `[camera] gesture seq=…`, and journald here is
+  persistent — an audit trail for anything a subscriber does off the back of it.
+- **The client's key table is fixed**, and `run` actions are refused unless the
+  config sets `allow_run: true`.
+- **No replay.** A client gets future events only unless it asks for history
+  explicitly, so a laptop waking from sleep cannot fire a burst of actions from
+  gestures made an hour ago.
+
+**The residual risk, stated plainly: a camera authenticates nobody.** Anyone
+physically present can trigger any binding — a guest, a delivery, a face on a
+video call shown on a screen the camera can see. The Discord allowlist covers
+none of them. That is survivable here only because the action vocabulary is the
+owner's own choice on the owner's own machine, and the defaults are media keys.
+It would not be survivable pointed at a shell.
+
+### Still not built, and why
+
+**Gesture → Hermes.** The above is why. If it is ever built it needs: an
+explicit, bounded, visibly indicated watch mode; a closed vocabulary mapped to a
+fixed action allowlist; much tighter limits than the laptop lane (≥1.5 s apart,
+≤6/min); and a restricted toolset for that lane. Whether
+`platform_toolsets.webhook` can actually narrow that lane is **unconfirmed** —
+`platform_toolsets.acp` is a documented counter-example that does not narrow
+ACP — and must be proven before anything depends on it. A `deliver_only: true`
+webhook route is the safest available shape, because it skips the agent
+entirely: zero LLM cost and no ability to run a tool at all. Do not add it
+casually.
