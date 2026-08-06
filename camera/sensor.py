@@ -157,13 +157,31 @@ class Sensor:
                 pass
 
     # -- capture --------------------------------------------------------
-    def grab(self):
+    def grab(self, long_edge: int | None = None):
         """(frame, captured_at, captured_monotonic) or None.
 
         Both clocks are recorded on purpose. The Pi has no battery-backed RTC
         and its wall clock is confidently wrong for ~34 s after boot (trap 6),
         so a consumer that needs an AGE must be able to notice the wall clock
         moving in a way monotonic did not.
+
+        `long_edge` downscales BEFORE the colour and rotation correction rather
+        than after. Both corrections are per-pixel and commute with a resize,
+        so the result is identical, but they then run on a quarter of the
+        pixels.
+
+        MEASURED, CPU per stream frame, because the first estimate of this was
+        wrong by more than the saving:
+            resize last   grab 9.5 + (resize 7.0 + jpeg 1.8)  = 18.3 ms
+            resize first  grab 14.5 + jpeg 1.8                = 16.3 ms
+        Only ~2 ms, not the 5 ms predicted -- the resize costs the same either
+        way (its INPUT is full-res regardless; only the correction shrinks).
+        Worth keeping, but it is an 11% trim, not a fix.
+
+        It is a parameter here, rather than a resize in the caller, so there
+        stays exactly ONE place that knows this sensor is mounted rotated and
+        hands back BGR -- the ring buffer already rediscovered the
+        aspect-ratio bug one layer down once (trap 17).
         """
         if self._cam is None:
             return None
@@ -172,6 +190,15 @@ class Sensor:
         except Exception as e:
             self.last_error = f"capture failed: {e}"
             return None
+
+        if long_edge:
+            from PIL import Image
+            from . import encode
+            img = Image.fromarray(frame)
+            target = encode._fit_long_edge(img.size, long_edge)
+            if img.size != target:
+                frame = np.asarray(img.resize(target, Image.BILINEAR),
+                                   dtype=np.uint8)
 
         # picamera2's "RGB888" gives BGR in the numpy array. The format name
         # describes the packed byte order, which is the reverse of the channel
@@ -193,6 +220,25 @@ class Sensor:
             frame = np.rot90(frame, k=ROTATE // 90)
 
         return np.ascontiguousarray(frame), time.time(), time.monotonic()
+
+    def set_frame_duration(self, limits) -> bool:
+        """Change the exposure/frame-rate window on a running camera.
+
+        A control, not a reconfiguration -- it takes effect within a frame or
+        two and costs none of the ~300 ms a reconfigure() plus re-settle would.
+        Used to pin 30 fps while someone is watching the live stream and to
+        hand the longer exposure back afterwards; see
+        protocol.STREAM_FRAME_DURATION for why the two cases want different
+        numbers.
+        """
+        if self._cam is None:
+            return False
+        try:
+            self._cam.set_controls({"FrameDurationLimits": tuple(limits)})
+            return True
+        except Exception as e:
+            self.last_error = f"set_frame_duration failed: {e}"
+            return False
 
     def metadata(self) -> dict:
         if self._cam is None:

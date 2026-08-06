@@ -48,10 +48,44 @@ purely unused attack surface, and a well-known DDoS amplification vector.
 systemctl disable --now rpcbind.socket rpcbind.service
 ```
 
-**Result: port 22 is now the only network-facing socket.** Everything else (VS Code server, Hermes
+**Result: port 22 was then the only network-facing socket.** Everything else (VS Code server, Hermes
 internals) binds to loopback only.
 
 Reverse with `sudo systemctl enable --now rpcbind.socket` if NFS is ever needed.
+
+> **This is no longer true, as of 2026-08-05.** The camera's live view
+> (`camera/stream.py`, **tcp/8081**) binds to the LAN by default, because the
+> point of it is a link that opens on the laptop. It is the second
+> network-facing socket on this box and the first one that serves a view of the
+> room, so it is called out here rather than left to be discovered in
+> `ss -tlnp`.
+>
+> What stands between it and the LAN:
+>
+> - **A token, required by default**, compared with `hmac.compare_digest`, on
+>   **every** endpoint — a gate on the page but not on `/snapshot.jpg` would be
+>   no gate at all, and `tests/test_stream.py` asserts all four.
+>   It lives in `~/.config/hermes-pi/camera-stream.token` (0600), beside the
+>   kill switch and deliberately **not** under `~/.hermes/`.
+> - **`MAX_VIEWERS = 6`**, and viewer slots are released in a `finally:`. A
+>   count that only went up would pin the sensor open until the service was
+>   restarted — the same shape of bug as trap 19, with a worse consequence.
+> - **The kill switches still work.** The stream wakes the sensor through
+>   `ensure_awake()`, so `~/.config/hermes-pi/camera.disabled` and
+>   `systemctl --user stop hermes-camera` stop it like anything else.
+> - **The panel still cannot be made to lie.** The CAM light reads the kernel's
+>   runtime-PM state, so a viewer lights it with no cooperation from this code.
+>
+> What does **not** stand between it and the LAN: a token in a URL is
+> bearer-shaped. It sits in browser history and in any screenshot of the
+> address bar, and the connection is plain HTTP, so anyone able to observe LAN
+> traffic can read both the token and the pixels. It is a lock on the door, not
+> a tunnel. If that is not enough for a given moment, the honest options are
+> `HERMES_CAMERA_STREAM_BIND=127.0.0.1` plus `ssh -L`, or
+> `HERMES_CAMERA_STREAM=off`.
+>
+> **This raises D-1 again.** The denied-user Discord test is still unrun, and
+> the number of paths to a view of this room has gone from one to two.
 
 ### 3. Auxiliary providers restricted
 `auxiliary.free_only: true`. Logs showed the auxiliary client willing to fall back to a **paid**

@@ -123,6 +123,29 @@ def contact_sheet(frames: list[np.ndarray], labels: list[str],
     return data, sheet.size, quality
 
 
+def to_stream_jpeg(frame: np.ndarray,
+                   long_edge: int = protocol.STREAM_LONG_EDGE,
+                   quality: int = protocol.STREAM_QUALITY) -> bytes:
+    """One frame of the live browser view.
+
+    Deliberately NOT to_jpeg(). That function exists to keep an image under a
+    byte ceiling because it is about to be welded into immutable conversation
+    history; it retries, drops quality, and rescales to get there. A streamed
+    frame is replaced 15 times a second and costs nothing after it is gone, so
+    the retry loop would only add latency. Fixed size, fixed quality, one pass.
+
+    Aspect is preserved for the same reason it is everywhere else here: the
+    sensor is mounted rotated and frames are portrait (576x1024).
+    """
+    img = Image.fromarray(frame)
+    target = _fit_long_edge(img.size, long_edge)
+    if img.size != target:
+        img = img.resize(target, Image.BILINEAR)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality, optimize=False)
+    return buf.getvalue()
+
+
 # Panel body zone, matching hermes_display's BODY_W/BODY_H exactly. The
 # renderer accepts a file of precisely this length and nothing else, so these
 # two numbers are part of that contract.

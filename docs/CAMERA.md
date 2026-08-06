@@ -234,6 +234,146 @@ Kill switches, ascending: `~/.config/hermes-pi/camera.disabled` (outside
 hermes-camera` → `mask` → lens cover / unplug the ribbon. **None of the
 software ones are enforceable against the agent** — see `docs/SECURITY.md`.
 
+---
+
+## Live stream — BUILT (2026-08-05)
+
+A continuous MJPEG view in a browser, so the camera can be watched and worked
+with directly rather than only through Hermes. Structure is taken from the
+owner's auto-drone project (`streaming/mjpeg_server.py`): a frame buffer
+guarded by a `Condition`, a `ThreadingHTTPServer`, and a
+`multipart/x-mixed-replace` response that never ends.
+
+```
+python3 -m camera --stream-url        # prints the link, token included
+```
+
+| endpoint | for |
+|---|---|
+| `/` | the page: live view, state, sensor power, motion, viewers, fps |
+| `/stream.mjpg` | the MJPEG stream itself |
+| `/snapshot.jpg` | one current frame — for `curl`, or a CV client that polls |
+| `/status.json` | the service's own status doc, plus `viewers` and `live` |
+
+### It lives INSIDE the camera service, and had to
+
+The sensor is an exclusive kernel resource: one process may hold it. A
+standalone stream script would either take the camera away from Hermes or fail
+to start, decided by nothing better than which one ran first. So the stream is
+a third **consumer** of frames the service already grabs, not a second owner.
+`pump_frames()` takes one frame per tick and gives it to whichever of the
+stream and the ring is due.
+
+### Viewers are the on switch
+
+The service stays lazy. Opening the page wakes the sensor; closing the last tab
+lets it sleep again after `STREAM_LINGER` (8 s, which covers a page reload —
+without it every refresh would pay a 434 ms cold wake). There is deliberately
+no separate toggle to leave switched on by accident.
+
+Measured, loopback, one viewer:
+
+```
+first frame from a sleeping camera   1.55 s   (cold wake included)
+delivered rate                      14.1 fps  (STREAM_FPS 15)
+frame size                           8.3 KB   at 640 long edge, q70
+wire                                 117 KB/s
+camera service CPU                   32.5%    of ONE core, only while watched
+display service CPU, same window      1.05%   (unaffected)
+snapshot, camera already awake        0.7 ms  (served from the buffer)
+```
+
+CPU per frame, measured stage by stage, because the first estimate of this was
+wrong by more than the thing it was estimating:
+
+```
+capture_array (blocks 33 ms wall)     2.0 ms cpu
+BGR swap + rot90 + contiguous         7.5 ms
+resize to 640 long edge               7.0 ms   <- larger than the JPEG
+JPEG q70                              1.8 ms
+```
+
+`Sensor.grab(long_edge=...)` resizes **before** correcting colour and rotation,
+which trims 18.3 → 16.3 ms. That is an 11% trim, not a fix: the resize costs
+the same either way because its *input* is full-res regardless; only the
+correction shrinks. Recorded because the obvious reading of these numbers
+(“resize first and save 5 ms”) is wrong.
+
+### Exposure: the live view and a still want different things
+
+`FRAME_DURATION_LIMITS` allows up to 100 ms of exposure, which is right for a
+still — it halves the grain when a model has to read what is in the frame. It
+is wrong for a live view: at 100 ms a dim room runs the stream at 10 fps and
+smears every hand movement, which is exactly what gesture work needs to see.
+So 30 fps is **pinned while a viewer is attached** and released afterwards, as
+a control rather than a reconfiguration (no ~300 ms re-settle).
+
+The cost, measured in a genuinely dark room (lux 5, camera facing an unlit
+ceiling at 22:30):
+
+```
+stills    cap 100 ms  -> exposure 66.6 ms  gain 16.0 (max)  mean level 94.0
+live view pin  33 ms  -> exposure 32.7 ms  gain 16.0 (max)  mean level 65.3
+```
+
+About a stop darker, and **gain is already at maximum so it cannot be bought
+back**. In normal room light neither cap binds and the two are identical. This
+is a deliberate trade of brightness for motion clarity, and it only applies
+while someone is watching.
+
+### Colour on the stream path
+
+Same correction as everything else — the stream calls the same
+`Sensor.grab()`, so `"RGB888"`-is-BGR and the 90° mount are handled once.
+Checked against `capture_image()` (picamera2's own PIL path): mean abs diff
+**3.360 as sent vs 3.638 channel-swapped**.
+
+**That margin is thin, and it is thin for a known reason**: the test scene was
+a near-neutral dark ceiling (channel means 65/68/65), and a grey scene is
+almost invariant under a red/blue swap. It agrees with the strong result
+measured earlier on a lit scene (0.512 vs 10.279) and is not independent
+evidence. **Colour cannot be properly judged until the camera is aimed at
+something with colour in it and focused.**
+
+### Security — this is the second network-facing socket on the box
+
+`docs/SECURITY.md` previously said ssh was the only one. It no longer is, and
+that is a real change to the threat model rather than a detail:
+
+- **A token is required by default**, checked with `hmac.compare_digest` on
+  every endpoint including `/snapshot.jpg`. It lives in
+  `~/.config/hermes-pi/camera-stream.token` (0600) — beside the kill switch,
+  under the owner's config and **not** `~/.hermes/`, because anything Hermes
+  manages, Hermes can rewrite. Stable across restarts so the URL stays
+  bookmarkable.
+- `HERMES_CAMERA_STREAM_BIND=127.0.0.1` restricts it to this host; reach it
+  with `ssh -L 8081:127.0.0.1:8081`. `HERMES_CAMERA_STREAM=off` disables it.
+- `HERMES_CAMERA_STREAM_TOKEN=off` serves the room to anyone on the LAN. It
+  logs a warning and takes an explicit setting; it is not the default and not
+  the easy path.
+- The stream is **not** exempt from the kill switches. It goes through
+  `ensure_awake()`, so `~/.config/hermes-pi/camera.disabled` and
+  `systemctl --user stop hermes-camera` both stop it.
+- The panel's CAM light needs no change: it reads the kernel's runtime-PM
+  state, so streaming lights it automatically. Verified — `suspended` →
+  `active` while a viewer is attached → `suspended` after.
+
+### Deliberately NOT copied from the drone
+
+Its camera settings are the opposite of what is wanted here, and correctly so
+for it: 2 ms exposure, gain 8, autofocus off at a fixed 1 m, noise reduction
+off, sharpness 2.0. That freezes airframe vibration for AprilTag detection and
+produces a grainy, dark, over-sharpened frame — right for a detector, wrong for
+a room a person or a model is looking at. The neutral controls in
+`camera/sensor.py` stand.
+
+Its `wait_for` shape was not copied either. Waiting on the Condition and then
+reading `self.frame` gives up instantly whenever the sequence has moved on with
+no frame present — precisely the state of a sleeping camera — so every
+connection here closed after **zero frames** until it became a `while` loop
+keyed on the sequence number. `tests/test_stream.py` pins it, and that test was
+confirmed to fail against the original.
+
 ## Still open
 
 - **Gestures are not built.** A gesture trigger is a path from "someone waves

@@ -25,6 +25,19 @@ ExecStart=/usr/bin/python3 -m camera
 # the capture audit line -- gets buried.
 Environment=LIBCAMERA_LOG_LEVELS=*:ERROR
 
+# Live MJPEG view for a browser on the LAN (camera/stream.py). Defaults are in
+# camera/protocol.py; every knob below is optional and shown at its default.
+#
+#   HERMES_CAMERA_STREAM=off          disable the server entirely
+#   HERMES_CAMERA_STREAM_BIND=0.0.0.0 use 127.0.0.1 to require an ssh -L tunnel
+#   HERMES_CAMERA_STREAM_PORT=8081
+#   HERMES_CAMERA_STREAM_TOKEN=off    serve with NO token -- see docs/SECURITY.md
+#
+# This is the SECOND network-facing socket on this box; ssh was the only one
+# before it. That is why the token is on by default and why turning it off
+# takes an explicit setting rather than being the path of least resistance.
+# Get the URL with:  python3 -m camera --stream-url
+
 Restart=always
 RestartSec=3
 

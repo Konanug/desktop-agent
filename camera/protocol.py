@@ -93,6 +93,39 @@ RING_HZ = 5.0
 RING_SECONDS = 4.0
 RING_SIZE = (384, 216)
 
+# -- live MJPEG stream (camera/stream.py) --------------------------------
+# A browser view on the LAN. Off the beaten path for this project, which had
+# exactly one network-facing socket (ssh) before it -- see docs/SECURITY.md.
+STREAM_PORT = 8081
+
+# MEASURED on a real 576x1024 frame from this camera (resize + Pillow JPEG,
+# median of 40):
+#     long edge 480 -> 6.1 ms,  4.9 KB
+#     long edge 640 -> 7.7 ms,  8.7 KB
+#     long edge 768 -> 9.3 ms, 13.6 KB
+# The RESIZE dominates, not the JPEG. 640 at 15 fps is ~11.6% of one core and
+# ~130 KB/s on the wire, well inside the unit's CPUQuota=60%.
+STREAM_LONG_EDGE = 640
+STREAM_QUALITY = 70
+STREAM_FPS = 15.0
+
+# Grace period after the last viewer disconnects. A browser reloading the page
+# closes and reopens the connection, and without a linger that round trip would
+# sleep the sensor and pay a 434 ms cold wake on every refresh.
+STREAM_LINGER = 8.0
+
+# Frame duration pinned while someone is WATCHING, in microseconds.
+#
+# FRAME_DURATION_LIMITS above allows up to 100 ms of exposure, which is the
+# right trade for a still: it halves the grain when a model has to read what is
+# in the frame. It is the wrong trade for a live view. At 100 ms a dim room
+# runs the stream at 10 fps and smears every hand movement into a streak --
+# exactly the thing gesture work needs to see. Pinning 30 fps while a viewer is
+# attached buys motion clarity at the cost of noise, and reverts on disconnect
+# so captures keep the quiet exposure. Set at runtime; no reconfigure, no
+# re-settle.
+STREAM_FRAME_DURATION = (33333, 33333)
+
 
 def runtime_dir() -> Path:
     base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"

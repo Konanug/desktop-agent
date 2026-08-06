@@ -43,7 +43,8 @@ unit is dead.
 │   ├── sensor.py         ★ ONLY picamera2 file. Swap to change cameras.
 │   ├── encode.py         JPEG under a byte ceiling + RGB565 panel preview
 │   ├── protocol.py       the tmpfs contract shared with the plugin
-│   └── __main__.py       lazy lifecycle, request serving, ring buffer
+│   ├── stream.py         live MJPEG for a browser — TRUST BOUNDARY (token)
+│   └── __main__.py       lazy lifecycle, request serving, ring buffer, stream
 ├── display/              the renderer (systemd user service)
 │   ├── panel.py          ★ ONLY hardware-specific file. Swap to change panels.
 │   ├── states.py         resolution order; the "never wrong" logic
@@ -84,7 +85,7 @@ Rebuild: `python3 tools/render_frames.py --out assets/anim` (~2 min).
 | Model | `openai-codex/gpt-5.6-terra`; auxiliary → `gpt-5.6-luna` |
 | Services | `hermes-gateway`, `hermes-display`, `hermes-camera`, `hermes-usage` (user) · `hermes-fbcon-detach` (system) |
 | Runtime state | `/run/user/1000/hermes-display/{state.json,request.json,images/}` |
-| Network | LAN only, `192.168.2.56`. Port 22 is the ONLY network-facing socket. |
+| Network | LAN only, `192.168.2.56`. Two network-facing sockets: **22** (ssh) and **8081** (camera live view, token-gated). |
 
 The renderer needs **no installed dependencies** — system Pillow 11.1.0 and
 numpy 2.2.4 only. Do not add a venv or pip installs without good reason.
@@ -225,6 +226,35 @@ figure was 90% -- honest in the source, misleading on the glass.
 invoking command line, so it kills the caller (exit 144). Anchor it:
 `pgrep -f "^/usr/bin/python3 -m camera"`.
 
+**22. "Wait on a Condition, then read the frame" gives up exactly when it
+matters.** The obvious MJPEG shape — `if seq == mine: cond.wait(); return
+frame` — is wrong twice: `wait()` can return spuriously, and `drop()` advances
+the sequence while leaving the frame `None`, which is precisely the state of a
+sleeping camera. A viewer connecting then sees "the sequence already moved",
+concludes it missed something, and hangs up. **Every stream closed after 0
+frames**, and it looked like a network fault. Wait in a `while` keyed on the
+sequence, re-deriving the remaining timeout each pass.
+`tests/test_stream.py:test_wait_survives_a_dropped_frame` was verified to FAIL
+against the original before being kept.
+
+**23. Resizing before the colour/rotation correction saves less than it looks
+like it will.** Correcting a 640-long-edge frame instead of a full one is
+obviously cheaper, so `Sensor.grab(long_edge=)` does it — but the resize itself
+costs the same either way, because its INPUT is full-res regardless. Measured
+per stream frame: 18.3 ms → 16.3 ms, an 11% trim, against a predicted 5 ms
+saving that would have been 30%. The service total barely moved (32.9% →
+32.5%). Profile stages against the real sensor before believing an arithmetic
+model of them — the first model here was wrong by more than the saving.
+
+**24. A camera stream's exposure cap wants the OPPOSITE of a still's.**
+`FRAME_DURATION_LIMITS` allows 100 ms because a longer exposure halves the
+grain for a model reading a photo. On a live view that same cap drops a dim
+room to 10 fps and smears every hand movement — the thing gesture work exists
+to see. 30 fps is pinned while a viewer is attached, via `set_controls`, not a
+reconfigure (which would cost ~300 ms and a re-settle). Measured cost in a dark
+room: mean level 94.0 → 65.3, with **gain already at max 16 so it cannot be
+bought back**. In normal light neither cap binds.
+
 ---
 
 ## Conventions
@@ -253,6 +283,7 @@ python3 tests/test_display_tools.py  # hostile images/URLs refused
 python3 tests/test_camera_tools.py      # a stale frame is never shown as live
 python3 tests/test_camera_indicator.py  # unknown camera state fails toward ON
 python3 tests/test_usage_parse.py       # session figures never borrow the weekly line
+python3 tests/test_stream.py            # the room is not served without a token
 ```
 
 `pytest` is NOT installed system-wide — every test module runs standalone via
@@ -312,6 +343,22 @@ Key facts a future session should not have to rediscover:
 - The panel's CAM light is driven by the **kernel's sensor power state**, not by
   anything the camera service claims, and it **fails toward ON**. See trap 13
   for why the obvious file-descriptor approach cannot work here.
+
+**There is also a live browser view** (`camera/stream.py`, tcp/8081), added as
+the first step toward CV/gesture work. `python3 -m camera --stream-url` prints
+the link. Structure follows the owner's auto-drone `streaming/mjpeg_server.py`;
+its *camera settings* were deliberately not copied (2 ms exposure, gain 8, NR
+off, sharpness 2.0 — right for AprilTag detection on a vibrating airframe,
+wrong for a room). Measured 14.1 fps, 8.3 KB/frame, 117 KB/s, **32.5% of one
+core while watched**, display unaffected at 1.05%. Key properties:
+
+- It runs **inside** `hermes-camera` because the sensor is exclusive — it is a
+  third consumer of frames the loop already grabs, not a second owner.
+- **Viewers are the on switch.** Opening the page wakes the sensor; closing the
+  last tab sleeps it after an 8 s linger (which covers a page reload).
+- The **token is on by default** and checked on every endpoint. See
+  `docs/SECURITY.md` — this is the second network-facing socket on the box and
+  the first that serves a view of the room.
 
 ### What is NOT built, and why
 

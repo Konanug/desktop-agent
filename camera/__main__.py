@@ -15,8 +15,15 @@ WHY A SEPARATE SERVICE
     disturb the agent.
 
 Loop shape: serve capture requests from a tmpfs directory, keep a decimated
-ring of recent frames while awake, and close the sensor once nothing has asked
-for a while.
+ring of recent frames while awake, feed the live MJPEG stream when somebody is
+watching, and close the sensor once nothing has asked for a while.
+
+THREE CONSUMERS, ONE GRAB
+The stream (camera/stream.py) is not a second owner of the camera -- it cannot
+be, the sensor is exclusive -- it is a third consumer of the frames this loop
+already pulls. pump_frames() takes ONE frame per tick and hands it to whichever
+of the stream and the ring is due, so adding the browser view did not double
+the capture rate.
 """
 
 from __future__ import annotations
@@ -33,12 +40,18 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from . import encode, protocol
+from . import encode, protocol, stream
 from .sensor import Sensor
 
 POLL_ASLEEP = 0.10      # invisible against a ~434 ms cold wake
 POLL_AWAKE = 0.02
+# A fixed poll cannot express a frame period that is not a multiple of it --
+# the same arithmetic that made the panel hitch four times a second (trap 9).
+# At POLL_AWAKE and 15 fps the stream would land on 80 ms instead of 66.7 ms,
+# a silent 12.5 fps. A 5 ms tick holds the period to within one poll.
+POLL_STREAM = 0.005
 STATUS_PERIOD = 1.0
+SWEEP_PERIOD = 1.0
 CAPTURE_TTL = 60.0      # captures are worthless once the turn has moved on
 
 _stop = False
@@ -118,15 +131,31 @@ class Service:
         self._prev_small: np.ndarray | None = None
         self.started_at = time.time()
 
+        # Live stream. The buffer exists even when the server does not, so
+        # every call site can push unconditionally instead of guarding.
+        self.stream_buf = stream.StreamBuffer()
+        self.stream_srv: stream.StreamServer | None = None
+        self._last_stream = 0.0
+        self._stream_count = 0
+        self._stream_window = time.time()
+        self.stream_fps = 0.0
+        self._live_pinned = False
+        self._last_wake_try = 0.0
+        self._last_sweep = 0.0
+
     # -- status ---------------------------------------------------------
-    def publish_status(self, now: float, force: bool = False) -> None:
-        """STATE, NEVER CONTENT. Same rule as state.json."""
-        if not force and now - self.last_status < STATUS_PERIOD:
-            return
-        self.last_status = now
-        doc = {
+    def status_doc(self) -> dict:
+        """STATE, NEVER CONTENT. Same rule as state.json.
+
+        Also served verbatim to the browser at /status.json, which is why
+        `live` is computed HERE rather than inferred in the page: whether the
+        picture on screen is current is a fact this process knows and the
+        browser cannot work out from a stalled <img>.
+        """
+        frame, _seq, at = self.stream_buf.latest()
+        return {
             "schema": protocol.SCHEMA,
-            "updated_at": now,
+            "updated_at": time.time(),
             "pid": os.getpid(),
             "started_at": self.started_at,
             "state": self.state,
@@ -137,7 +166,16 @@ class Service:
             "motion": round(self.motion, 4),
             "ring_frames": len(self._ring),
             "idle_timeout": self.idle_timeout,
+            "viewers": self.stream_buf.viewers,
+            "stream_fps": round(self.stream_fps, 2),
+            "live": frame is not None and time.time() - at <= stream.STALE_AFTER,
         }
+
+    def publish_status(self, now: float, force: bool = False) -> None:
+        if not force and now - self.last_status < STATUS_PERIOD:
+            return
+        self.last_status = now
+        doc = self.status_doc()
         try:
             _atomic_write(protocol.status_path(),
                           json.dumps(doc, indent=2).encode())
@@ -171,24 +209,92 @@ class Service:
         self._ring.clear()
         self._prev_small = None
         self.motion = 0.0
+        self._live_pinned = False
+        self.stream_fps = 0.0
+        # Forget the last frame. Anything still holding the page open must see
+        # NO SIGNAL, not the final picture before the camera closed.
+        self.stream_buf.drop()
         self.publish_status(time.time(), force=True)
         print("[camera] sensor closed (idle)", flush=True)
 
-    # -- ring / motion --------------------------------------------------
-    def pump_ring(self, now: float) -> None:
-        """Keep a decimated history so 'what did I just do' can look BACKWARDS.
+    # -- stream demand --------------------------------------------------
+    def watching(self, now: float) -> bool:
+        """Is someone looking at the live view right now?
 
-        Without this, a question asked after the interesting moment can only
-        ever sample forward -- i.e. show the wrong few seconds.
+        A viewer is a reason to be awake -- that is the stream's on switch, and
+        there is deliberately no other one. The linger covers a page reload,
+        which closes and reopens the connection and would otherwise pay a
+        434 ms cold wake every refresh.
+        """
+        if self.stream_srv is None:
+            return False
+        if self.stream_buf.viewers > 0:
+            return True
+        return now - self.stream_buf.last_viewer_at < protocol.STREAM_LINGER
+
+    def apply_live_tuning(self, live: bool) -> None:
+        """Short exposure while watched, quiet exposure otherwise."""
+        if not self.sensor.is_open or live == self._live_pinned:
+            return
+        limits = (protocol.STREAM_FRAME_DURATION if live
+                  else protocol.FRAME_DURATION_LIMITS)
+        if self.sensor.set_frame_duration(limits):
+            self._live_pinned = live
+            print(f"[camera] frame duration {limits[0]}-{limits[1]} us "
+                  f"({'live view' if live else 'stills'})", flush=True)
+
+    # -- frames ---------------------------------------------------------
+    def pump_frames(self, now: float) -> None:
+        """ONE grab, fed to whichever consumer is due.
+
+        The ring keeps a decimated history so 'what did I just do' can look
+        BACKWARDS -- without it, a question asked after the interesting moment
+        could only sample forward, i.e. show the wrong few seconds. The stream
+        wants the same frames an order of magnitude more often. Grabbing twice
+        would double the sensor traffic to no purpose, so they share.
         """
         if not self.sensor.is_open:
             return
-        if now - self._last_ring < 1.0 / protocol.RING_HZ:
+        live = self.watching(now)
+        stream_due = live and now - self._last_stream >= 1.0 / protocol.STREAM_FPS
+        ring_due = now - self._last_ring >= 1.0 / protocol.RING_HZ
+        if not (stream_due or ring_due):
             return
-        got = self.sensor.grab()
+
+        # Ask the sensor for the largest size either consumer needs, and no
+        # more. Neither the stream nor the ring ever wants the full 1024 -- only
+        # a capture bound for the model does -- and correcting pixels nobody
+        # will look at is the most expensive thing this loop can do.
+        long_edge = (protocol.STREAM_LONG_EDGE if stream_due
+                     else max(protocol.RING_SIZE))
+        got = self.sensor.grab(long_edge=long_edge)
         if got is None:
             return
         frame, wall, mono = got
+
+        if stream_due:
+            self._push_stream(frame, wall, now)
+        if ring_due:
+            self._push_ring(frame, wall, mono, now)
+
+    def _push_stream(self, frame, wall: float, now: float) -> None:
+        try:
+            jpeg = encode.to_stream_jpeg(frame)
+        except Exception as e:                              # pragma: no cover
+            print(f"[camera] stream encode failed: {e}", flush=True)
+            return
+        self.stream_buf.push(jpeg, wall)
+        self._last_stream = now
+        # Delivered rate over a rolling second. Reported to the page because a
+        # number the viewer can see is the only way to notice the stream
+        # quietly running at half speed.
+        self._stream_count += 1
+        if now - self._stream_window >= 1.0:
+            self.stream_fps = self._stream_count / (now - self._stream_window)
+            self._stream_count = 0
+            self._stream_window = now
+
+    def _push_ring(self, frame, wall: float, mono: float, now: float) -> None:
         # Preserve aspect here too. RING_SIZE is written landscape, but a
         # rotated sensor produces portrait frames, and resizing straight to it
         # squashed every ring frame -- which then squashed the contact sheet,
@@ -348,6 +454,11 @@ class Service:
             print(f"[camera] preview unavailable: {e}", flush=True)
 
     def sweep(self, now: float) -> None:
+        # Throttled: the loop ticks at 200 Hz while streaming and globbing the
+        # spool that often is pure waste against a 60 s TTL.
+        if now - self._last_sweep < SWEEP_PERIOD:
+            return
+        self._last_sweep = now
         for f in protocol.captures_dir().glob("*"):
             try:
                 if now - f.stat().st_mtime > CAPTURE_TTL:
@@ -361,7 +472,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--idle-timeout", type=float, default=protocol.IDLE_TIMEOUT)
     ap.add_argument("--capture-test", action="store_true",
                     help="measure cold and warm capture, then exit")
+    ap.add_argument("--stream-url", action="store_true",
+                    help="print the live stream URL (with token) and exit")
     args = ap.parse_args(argv)
+
+    if args.stream_url:
+        # Takes no lock and touches no hardware: safe to run while the service
+        # is up, which is the only time the answer is useful.
+        port = int(os.environ.get("HERMES_CAMERA_STREAM_PORT",
+                                  str(protocol.STREAM_PORT)))
+        tok = stream.load_or_create_token()
+        print(f"http://{stream.local_ip()}:{port}/?k={tok}")
+        return 0
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
@@ -379,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[camera] started, idle timeout {svc.idle_timeout:.0f}s, "
           f"power file {protocol.sensor_power_path()}", flush=True)
+    svc.stream_srv = stream.start(svc.stream_buf, svc.status_doc)
     svc.publish_status(time.time(), force=True)
 
     while not _stop:
@@ -388,15 +511,32 @@ def main(argv: list[str] | None = None) -> int:
             svc.serve(req)
             now = time.time()
 
-        svc.pump_ring(now)
+        # A viewer on the live page is a wake reason in its own right, ranked
+        # below a capture request only because requests are served first.
+        live = svc.watching(now)
+        if live and not svc.sensor.is_open and now - svc._last_wake_try > 2.0:
+            # Throttled: if the sensor is muted or broken, an unthrottled retry
+            # would spin at the poll rate and fill the journal with the same
+            # line forever.
+            svc._last_wake_try = now
+            svc.ensure_awake()
+        svc.apply_live_tuning(live)
 
-        if svc.sensor.is_open and now - svc.last_request > svc.idle_timeout:
+        svc.pump_frames(now)
+
+        if (svc.sensor.is_open and not live
+                and now - svc.last_request > svc.idle_timeout):
             svc.sleep_sensor()
 
         svc.sweep(now)
         svc.publish_status(now)
-        time.sleep(POLL_AWAKE if svc.sensor.is_open else POLL_ASLEEP)
+        # While streaming the loop must tick faster than the frame period or
+        # the delivered rate quietly lands at half of STREAM_FPS.
+        time.sleep(POLL_STREAM if live and svc.sensor.is_open
+                   else POLL_AWAKE if svc.sensor.is_open else POLL_ASLEEP)
 
+    if svc.stream_srv is not None:
+        svc.stream_srv.stop()
     svc.sleep_sensor()
     svc.state = "off"
     svc.publish_status(time.time(), force=True)

@@ -144,12 +144,42 @@ systemctl --user restart hermes-display
 leaves a remainder at the wrap and the rings visibly snap back a few degrees,
 once per loop, forever. `test_anim_seam.py` catches exactly this.
 
+### Watch the camera live in a browser
+```bash
+cd ~/projects/hermes-pi
+python3 -m camera --stream-url          # prints the link, token included
+```
+
+Open it on any device on the LAN. **Opening the page is what turns the camera
+on** — there is no separate switch. Close the last tab and the sensor sleeps
+again 8 s later; the panel's CAM light goes out when it does, because that
+light is driven by the kernel's power state and not by anything this code says.
+
+- `/snapshot.jpg?k=...` — one current frame, for `curl` or a CV client
+- `/status.json?k=...` — state, sensor power, motion, viewers, fps, `live`
+
+The link stops working if the token file is deleted; a new one is generated on
+next use, so re-run `--stream-url` to get the new link.
+
+To turn it off: `HERMES_CAMERA_STREAM=off` in the unit, or
+`HERMES_CAMERA_STREAM_BIND=127.0.0.1` to require `ssh -L 8081:127.0.0.1:8081`.
+The ordinary kill switches work on it too — it wakes the sensor by the same
+path everything else does.
+
+**NO SIGNAL on the page** means frames stopped arriving, not that the page
+broke. Check `systemctl --user status hermes-camera` and whether the camera is
+muted (`~/.config/hermes-pi/camera.disabled`).
+
 ### Run the tests
 ```bash
 cd ~/projects/hermes-pi
 python3 tests/test_states.py         # panel cannot claim Hermes is healthy when it is not
 python3 tests/test_anim_seam.py      # animation loops close exactly
 python3 tests/test_display_tools.py  # hostile images and URLs are refused
+python3 tests/test_camera_tools.py      # a stale frame is never shown as live
+python3 tests/test_camera_indicator.py  # unknown camera state fails toward ON
+python3 tests/test_usage_parse.py       # session figures never borrow the weekly line
+python3 tests/test_stream.py            # the room is not served without a token
 ```
 
 ---
