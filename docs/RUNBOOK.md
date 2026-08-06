@@ -170,6 +170,30 @@ path everything else does.
 broke. Check `systemctl --user status hermes-camera` and whether the camera is
 muted (`~/.config/hermes-pi/camera.disabled`).
 
+**The stream connects but delivers 0 frames.** Seen once. Looks exactly like a
+network fault and is not one — the capture loop is wedged with the sensor open.
+Check liveness, and note **which** fields to read:
+
+```bash
+curl -s "http://127.0.0.1:8081/status.json?k=$(cat ~/.config/hermes-pi/camera-stream.token)" \
+  | python3 -m json.tool | grep -E "loop_idle_s|last_frame_age_s|sensor_error|state"
+```
+
+`updated_at` is **not** a heartbeat — it is written by the HTTP thread that
+answers the request and stays current while the loop is dead. `loop_idle_s` and
+`last_frame_age_s` are written only by the capture loop.
+
+A watchdog now catches this after 15 s and exits so systemd restarts it, so it
+should self-heal within ~20 s and leave a `[camera] WATCHDOG:` line in the
+journal. If that line repeats, the restart limit (5 in 300 s) will eventually
+put the unit in `FAILED` on purpose — that means it needs a human, not another
+restart:
+
+```bash
+journalctl --user -u hermes-camera | grep WATCHDOG
+systemctl --user reset-failed hermes-camera && systemctl --user start hermes-camera
+```
+
 ### Hand tracking
 Set up (idempotent, safe to re-run):
 ```bash

@@ -234,6 +234,63 @@ def test_snapshot_refuses_rather_than_serving_a_stale_frame():
             "did not actually wait for a fresh frame"
 
 
+# -- watchdog -------------------------------------------------------------
+# A wedged capture loop was OBSERVED once: sensor open and powered, zero frames
+# produced, every browser connection closing after 5 s with nothing. It looked
+# exactly like a network fault and survived four minutes until a hand restart,
+# and has not reproduced since, including under deliberate browser-like load.
+# The expensive part of that incident was not the downtime -- it was that
+# nothing said anything was wrong, and that status.json's `updated_at` stayed
+# current the whole time because the HTTP thread writes it.
+class _FakeSensor:
+    def __init__(self, is_open=True):
+        self.is_open = is_open
+        self.last_error = None
+
+
+def _svc(is_open=True, last_frame_ago=0.0, loop_idle=0.0):
+    from camera.__main__ import Service
+    s = Service.__new__(Service)             # no camera, no threads, no venv
+    s.sensor = _FakeSensor(is_open)
+    s.last_frame_at = time.time() - last_frame_ago
+    s.loop_tick = time.monotonic() - loop_idle
+    return s
+
+
+def test_watchdog_is_quiet_when_frames_are_flowing():
+    assert _svc(is_open=True, last_frame_ago=0.2).stall_reason() is None
+
+
+def test_watchdog_fires_on_a_frame_drought():
+    """THE OBSERVED FAILURE: sensor open, no frames, indefinitely."""
+    from camera.__main__ import STALL_TIMEOUT
+    why = _svc(is_open=True, last_frame_ago=STALL_TIMEOUT + 5).stall_reason()
+    assert why and "no frame" in why, f"drought not detected: {why!r}"
+
+
+def test_watchdog_fires_when_the_loop_stops_ticking():
+    from camera.__main__ import STALL_TIMEOUT
+    why = _svc(is_open=True, last_frame_ago=0.1,
+               loop_idle=STALL_TIMEOUT + 5).stall_reason()
+    assert why and "not ticked" in why, f"dead loop not detected: {why!r}"
+
+
+def test_watchdog_never_fires_on_a_sleeping_camera():
+    """The camera is closed almost all the time by design. Restarting the
+    service every 15 s of idle would be far worse than the bug it guards."""
+    from camera.__main__ import STALL_TIMEOUT
+    s = _svc(is_open=False, last_frame_ago=STALL_TIMEOUT + 600,
+             loop_idle=STALL_TIMEOUT + 600)
+    assert s.stall_reason() is None, "would restart a healthy idle service"
+
+
+def test_watchdog_tolerates_a_freshly_opened_camera():
+    """A just-opened sensor has produced no frames yet. ensure_awake() stamps
+    last_frame_at at the open precisely so a reopen cannot inherit the stale
+    timestamp from the previous session and trip this immediately."""
+    assert _svc(is_open=True, last_frame_ago=0.0).stall_reason() is None
+
+
 def _run() -> int:
     fails = 0
     for name, fn in sorted(globals().items()):

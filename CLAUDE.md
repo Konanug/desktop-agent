@@ -269,6 +269,19 @@ libcamera auto-selects 1536x864 and you get **44.4%** of the sensor — that is
 the crop trap already documented, and it is the one thing that genuinely does
 change FoV.)
 
+**27. `status.json`'s `updated_at` IS NOT A HEARTBEAT, and reading it as one
+wasted a real diagnosis.** The document is built on demand, so when it is
+fetched over HTTP the timestamp is written by the *HTTP thread*. During an
+observed wedge — capture loop stuck, sensor open and powered, zero frames, every
+browser connection closing after 5 s with nothing — `updated_at` stayed
+perfectly current and I concluded the loop was alive. It was not. Use
+`loop_idle_s` and `last_frame_age_s`, which only the capture loop writes.
+`camera/__main__.py` now also carries a watchdog: while the sensor is open the
+ring pumps regardless of viewers, so a frame drought is unambiguous, and it
+exits 70 for systemd rather than hanging silently. Root cause of that wedge is
+**still unknown** and it has not reproduced, including under deliberate
+browser-like load — the fix makes it loud and self-healing, not impossible.
+
 **26. Feeding unrelated stills to a `RunningMode.VIDEO` tracker measures
 nothing.** VIDEO mode carries a track between frames and uses the previous
 frame as a prior, so jump-cutting between different photos breaks it. The

@@ -34,6 +34,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -53,6 +54,23 @@ POLL_STREAM = 0.005
 STATUS_PERIOD = 1.0
 SWEEP_PERIOD = 1.0
 CAPTURE_TTL = 60.0      # captures are worthless once the turn has moved on
+
+# Watchdog. OBSERVED ONCE, not theorised: the capture loop wedged with the
+# sensor open and powered, producing no frames at all -- ring empty, stream at
+# 0 fps -- while the HTTP thread carried on answering happily. Every browser
+# connection sat for five seconds and closed with zero frames, which reads
+# exactly like a network fault. It survived for four minutes until the service
+# was restarted by hand, and it has not reproduced since, including under
+# deliberate browser-like load.
+#
+# The cause is still unknown. What is NOT acceptable is the failure being
+# silent and permanent, so this converts it into a loud, self-healing one:
+# while the sensor is open the ring pumps at RING_HZ regardless of viewers, so
+# a frame drought is unambiguous evidence the loop is stuck. Exiting hands the
+# problem to systemd's Restart=always (3 s), and StartLimitBurst still guards
+# against a crash loop.
+STALL_TIMEOUT = 15.0
+WATCHDOG_PERIOD = 5.0
 
 _stop = False
 
@@ -143,6 +161,11 @@ class Service:
         self._last_wake_try = 0.0
         self._last_sweep = 0.0
 
+        # Liveness. Both are written by the CAPTURE LOOP and by nothing else,
+        # which is the whole point -- see status_doc().
+        self.loop_tick = time.monotonic()
+        self.last_frame_at = 0.0
+
         # Hand tracking. Optional in the strongest sense: if mediapipe or the
         # model is missing the tracker never starts and everything else --
         # including Hermes' ability to see -- carries on unchanged.
@@ -162,11 +185,24 @@ class Service:
         `live` is computed HERE rather than inferred in the page: whether the
         picture on screen is current is a fact this process knows and the
         browser cannot work out from a stalled <img>.
+
+        `updated_at` IS NOT A HEARTBEAT, and reading it as one wasted a real
+        diagnosis. This document is built on demand, so when it is fetched over
+        HTTP the timestamp is written by the HTTP thread -- it stays perfectly
+        current while the capture loop is wedged solid. `loop_idle_s` and
+        `last_frame_age_s` are written only by the capture loop and are the
+        figures that actually mean something is alive.
         """
         frame, _seq, at = self.stream_buf.latest()
+        now = time.time()
         return {
             "schema": protocol.SCHEMA,
-            "updated_at": time.time(),
+            "updated_at": now,
+            # Liveness of the CAPTURE LOOP specifically.
+            "loop_idle_s": round(time.monotonic() - self.loop_tick, 2),
+            "last_frame_age_s": (round(now - self.last_frame_at, 2)
+                                 if self.last_frame_at else None),
+            "sensor_error": self.sensor.last_error,
             "pid": os.getpid(),
             "started_at": self.started_at,
             "state": self.state,
@@ -209,6 +245,10 @@ class Service:
         self.state = "warming"
         self.publish_status(time.time(), force=True)
         ok = self.sensor.open()
+        # Start the frame clock at the open, not at the first frame: otherwise
+        # a reopen inherits the stale timestamp from the previous session and
+        # the watchdog fires on a camera that is merely warming up.
+        self.last_frame_at = time.time() if ok else 0.0
         self.state = "awake" if ok else "off"
         self.publish_status(time.time(), force=True)
         if ok:
@@ -227,6 +267,7 @@ class Service:
         self.motion = 0.0
         self._live_pinned = False
         self.stream_fps = 0.0
+        self.last_frame_at = 0.0        # closed sensor is not a stall
         # Forget the last frame. Anything still holding the page open must see
         # NO SIGNAL, not the final picture before the camera closed.
         self.stream_buf.drop()
@@ -325,6 +366,7 @@ class Service:
         if got is None:
             return
         frame, wall, mono = got
+        self.last_frame_at = wall           # the watchdog's only evidence
 
         if stream_due:
             # Hand the tracker the frame the stream already made. Detection is
@@ -551,6 +593,48 @@ class Service:
         except Exception as e:
             print(f"[camera] preview unavailable: {e}", flush=True)
 
+    def stall_reason(self, now: float | None = None) -> str | None:
+        """Why the capture loop looks dead, or None if it looks alive.
+
+        Only meaningful while the sensor is OPEN, because that is when frames
+        are unconditionally expected: the ring pumps at RING_HZ whether or not
+        anyone is watching, so a frame drought with the sensor open cannot be
+        explained by there being nothing to do.
+        """
+        if not self.sensor.is_open:
+            return None
+        now = now or time.time()
+        if self.last_frame_at and now - self.last_frame_at > STALL_TIMEOUT:
+            return (f"no frame for {now - self.last_frame_at:.0f}s with the "
+                    f"sensor open")
+        if time.monotonic() - self.loop_tick > STALL_TIMEOUT:
+            return (f"capture loop has not ticked for "
+                    f"{time.monotonic() - self.loop_tick:.0f}s")
+        return None
+
+    def start_watchdog(self) -> None:
+        def run():
+            while True:
+                time.sleep(WATCHDOG_PERIOD)
+                why = self.stall_reason()
+                if why is None:
+                    continue
+                # Say everything useful BEFORE exiting; this journal line is
+                # the only account of the failure that will survive.
+                print(f"[camera] WATCHDOG: {why}. state={self.state} "
+                      f"powered={protocol.sensor_powered()} "
+                      f"viewers={self.stream_buf.viewers} "
+                      f"sensor_error={self.sensor.last_error} "
+                      f"-- exiting so systemd restarts a working one",
+                      flush=True)
+                sys.stdout.flush()
+                sys.stderr.flush()
+                # os._exit, not sys.exit: the loop is wedged, so an exception
+                # in this thread would be ignored and interpreter shutdown
+                # could block on the very thing that is stuck.
+                os._exit(70)
+        threading.Thread(target=run, name="watchdog", daemon=True).start()
+
     def sweep(self, now: float) -> None:
         # Throttled: the loop ticks at 200 Hz while streaming and globbing the
         # spool that often is pure waste against a 60 s TTL.
@@ -600,10 +684,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[camera] started, idle timeout {svc.idle_timeout:.0f}s, "
           f"power file {protocol.sensor_power_path()}", flush=True)
     svc.stream_srv = stream.start(svc.stream_buf, svc.status_doc)
+    svc.start_watchdog()
     svc.publish_status(time.time(), force=True)
 
     while not _stop:
         now = time.time()
+        svc.loop_tick = time.monotonic()
         req = svc.next_request()
         if req is not None:
             svc.serve(req)
