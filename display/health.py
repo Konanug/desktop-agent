@@ -24,6 +24,20 @@ def _run(cmd: list[str], timeout: float = 4.0) -> str:
         return ""
 
 
+def _voice_status_file() -> str | None:
+    """Where the voice service publishes STATE (never content)."""
+    import os
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return f"{base}/hermes-voice/status.json"
+
+
+def _voice_unit_present() -> bool:
+    """Is a voice service installed at all? Cached by the caller's tick."""
+    import os
+    return os.path.exists(
+        os.path.expanduser("~/.config/systemd/user/hermes-voice.service"))
+
+
 def _sensor_power_file(sensor: str = "imx708") -> str | None:
     """Locate the camera sensor's runtime-PM status file, by device name.
 
@@ -50,6 +64,11 @@ class Health:
     clock_synced: bool = False
     # None means "could not tell". The panel must treat that as CAMERA ON.
     camera_on: bool | None = None
+    # Same rule for the microphone: None means "could not tell", and the panel
+    # must treat that as MIC ON. A microphone that is listening and does not
+    # say so is the same failure as a camera that is.
+    mic_on: bool | None = None
+    mic_busy: bool = False          # actively capturing or transcribing a turn
     checked_at: float = 0.0
 
 
@@ -64,6 +83,7 @@ class HealthProbe:
         self._cache = Health()
         self._cam_file = _sensor_power_file()
         self._cam_checked = 0.0
+        self._mic_file = _voice_status_file()
 
     def _camera_on(self) -> bool | None:
         """Is the camera sensor POWERED? True / False / None = cannot tell.
@@ -93,6 +113,35 @@ class HealthProbe:
         except OSError:
             return None
 
+    def _mic(self) -> tuple[bool | None, bool]:
+        """Is the microphone open, and is a turn being captured?
+
+        Read from the voice service's own status file, which is a WEAKER kind
+        of evidence than the camera indicator: that one reads the kernel's
+        power state for the sensor, so a crashed or dishonest camera service
+        cannot switch the light off. There is no equivalent kernel fact for a
+        microphone -- ALSA does not expose "somebody is capturing" anywhere
+        comparable -- so this trusts the service.
+
+        The fail direction is therefore doing real work here. A missing or
+        unreadable status file means UNKNOWN, not "off", because the service
+        may be running and merely failing to write. Only a positively observed
+        `mic_open: false` turns the indicator off. The one case that IS
+        trustworthy in the off direction is the unit not existing at all, and
+        even then the file is checked rather than assumed.
+        """
+        if self._mic_file is None:
+            return None, False
+        try:
+            import json
+            d = json.loads(open(self._mic_file).read())
+        except (OSError, ValueError):
+            # File absent or half-written. If the service is not installed at
+            # all there is no microphone to warn about; otherwise assume ON.
+            return (None if _voice_unit_present() else False), False
+        state = d.get("state")
+        return bool(d.get("mic_open")), state in ("capturing", "thinking")
+
     def get(self, now: float | None = None) -> Health:
         now = now or time.time()
         if now - self._cache.checked_at < self.interval:
@@ -104,9 +153,14 @@ class HealthProbe:
             if now - self._cam_checked >= self.camera_interval:
                 self._cam_checked = now
                 self._cache.camera_on = self._camera_on()
+                # The mic rides the same fast tick and for the same reason:
+                # turning the light on late is the unsafe direction. It is one
+                # small read from tmpfs.
+                self._cache.mic_on, self._cache.mic_busy = self._mic()
             return self._cache
 
         state = _run(["systemctl", "--user", "is-active", self.unit]) or "unknown"
+        mic_on, mic_busy = self._mic()
 
         # `is-active` reports "failed" for a unit that tripped its start-limit,
         # which is the terminal "needs a human" condition the FAILED screen
@@ -123,6 +177,8 @@ class HealthProbe:
                 _run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"]) == "yes"
             ),
             camera_on=self._camera_on(),
+            mic_on=mic_on,
+            mic_busy=mic_busy,
             checked_at=now,
         )
         return self._cache

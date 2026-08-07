@@ -154,7 +154,8 @@ class Renderer:
 
     # -- zones -----------------------------------------------------------
     def draw_header(self, r: Resolved, clock_ok: bool, now: float,
-                    camera_on: bool | None = False) -> int:
+                    camera_on: bool | None = False,
+                    mic_on: bool | None = False, mic_busy: bool = False) -> int:
         img = Image.new("RGB", (self.w, self.header.h), BLACK)
         d = ImageDraw.Draw(img)
         _, accent = _LABEL.get(r.screen, ("", CYAN))
@@ -175,11 +176,26 @@ class Renderer:
         # unknown means "assume nothing good". For the camera, unknown means
         # ASSUME IT IS ON -- never tell someone the camera is off unless that
         # was positively observed.
+        x = s(110)
         if camera_on is not False:
             on = camera_on is True
             col = RED if on else AMBER
             label = "CAM" if on else "CAM?"
-            x = s(110)
+            d.ellipse((x, s(12), x + s(9), s(21)), fill=col)
+            d.text((x + s(14), s(8)), label, font=self.f_tiny, fill=col)
+            x += s(52)
+
+        # Microphone tally, same rule and the same inverted fail direction:
+        # never say the mic is off unless that was positively observed.
+        # MIC     listening for the wake word
+        # MIC ((  actively capturing or transcribing a turn -- a stronger
+        #         state that deserves to look different, because that is when
+        #         words are being recorded rather than merely heard
+        # MIC?    could not tell
+        if mic_on is not False:
+            on = mic_on is True
+            col = RED if on else AMBER
+            label = ("MIC ((" if (on and mic_busy) else "MIC" if on else "MIC?")
             d.ellipse((x, s(12), x + s(9), s(21)), fill=col)
             d.text((x + s(14), s(8)), label, font=self.f_tiny, fill=col)
 
@@ -337,14 +353,18 @@ class Renderer:
         """Header + footer only; the body is the animation's."""
         now = now or time.time()
         return (self.draw_header(r, health.clock_synced, now,
-                                 getattr(health, 'camera_on', False))
+                                 getattr(health, 'camera_on', False),
+                                 getattr(health, 'mic_on', False),
+                                 getattr(health, 'mic_busy', False))
                 + self.draw_footer(r, state, health, now, usage))
 
     def draw(self, r: Resolved, state: dict | None, health,
              now: float | None = None, usage: dict | None = None) -> int:
         now = now or time.time()
         n = self.draw_header(r, health.clock_synced, now,
-                             getattr(health, 'camera_on', False))
+                             getattr(health, 'camera_on', False),
+                             getattr(health, 'mic_on', False),
+                             getattr(health, 'mic_busy', False))
         n += self.draw_body(r)
         n += self.draw_footer(r, state, health, now, usage)
         return n

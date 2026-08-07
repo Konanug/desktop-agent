@@ -255,6 +255,46 @@ none of them. That is survivable here only because the action vocabulary is the
 owner's own choice on the owner's own machine, and the defaults are media keys.
 It would not be survivable pointed at a shell.
 
+### Voice → Hermes — BUILT 2026-08-07, with the lane narrowed first
+
+"hey jarvis" → transcript → an agent **stripped of `terminal` and
+`code_execution`**. Full write-up: `docs/VOICE.md`.
+
+This crosses a line the gesture work deliberately did not, and it was only
+crossed after proving the mitigation exists. The narrowing was verified against
+the installed source *before* any voice code was written, in both directions —
+the control case (explicitly adding `terminal` back) confirms the resolver is
+consulted rather than ignored, which is what the ACP counter-example in Hermes'
+own docs made worth checking.
+
+- **The listener is LOOPBACK ONLY** (`127.0.0.1:8644`). This box still has two
+  network-facing sockets: 22 and 8081. HMAC-SHA256 with a timestamp-bound V2
+  signature is defence in depth against something else already on the machine,
+  not the thing keeping strangers out — the bind is.
+- **Sliding rate limits**: 3 s gap, 6/min, 60/hour. A television talking to
+  itself reaches the hourly cap and stops.
+- **The panel shows `MIC`**, and `MIC ((` while actually capturing. Unknown
+  fails toward ON.
+- **No transcript is ever logged or published.** Journald gets length and
+  timing; `status.json` carries state, never content.
+
+**The residual risk, plainly: a microphone authenticates nobody.** Anything
+audible — a podcast, a guest, a video call on a speaker — can start a
+conversation with an agent that has memory, a camera and web access. That is a
+much smaller blast radius than a shell, and it is not zero:
+
+- **`web` is an exfiltration path.** It is included because it is what makes
+  the assistant useful, and it means text the mic picked up could in principle
+  steer a fetch. Remove it from `platform_toolsets.webhook` if that trade is
+  not worth it.
+- **Prompt fencing is a request, not a mechanism.** The route prompt wraps the
+  transcript and says to treat it as data. That is worth doing and it is the
+  weakest of the three defences; do not mistake it for a boundary.
+- **The mic indicator is weaker evidence than `CAM`.** The camera light reads
+  the kernel's sensor power state, so a crashed camera service cannot switch it
+  off. There is no equivalent kernel fact for a microphone, so the mic light
+  trusts the voice service's own status file.
+
 ### Still not built, and why
 
 **Gesture → Hermes.** The above is why. If it is ever built it needs: an

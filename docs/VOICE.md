@@ -1,0 +1,208 @@
+# Voice
+
+Built 2026-08-07. Say **"hey jarvis"** near the Pi, ask something, and Hermes
+answers — in Discord, and out loud.
+
+```
+mic ─► openWakeWord ─► energy endpointer ─► faster-whisper ─► HMAC POST
+       "hey jarvis"     (room-calibrated)      base.en        127.0.0.1:8644
+       10% of a core                          2.5x realtime          │
+                                                                     ▼
+                    speak.txt ◄── hermes_voice plugin ◄──────── the agent
+                        │                                    (NO terminal)
+                        ▼                                          │
+                 piper ─► ReSpeaker                                ▼
+                                                                Discord
+```
+
+Everything runs offline on the Pi. No API key, nothing billed, no audio leaves
+the box — the only thing that goes anywhere is the transcript, to an agent on
+the same machine over loopback.
+
+---
+
+## Measured on this hardware
+
+| stage | cost |
+|---|---|
+| Wake word, continuous | **10.0% of one core**, 355 MB RSS (bench said 7.8%; the service does a little more) |
+| STT `base.en` | **2.5× realtime** — a 6 s utterance in 2.40 s |
+| STT `tiny.en` | 3.6× realtime |
+| STT `small.en` | **0.8× — slower than realtime, unusable** |
+| TTS `piper` medium | 0.7× realtime (1.54 s of speech in 2.37 s) |
+
+`base.en` is the knee. Anything larger cannot keep up with a person talking,
+which disqualifies it however well it reads.
+
+Wake detection is exact on this model: a synthesised **"Hey Jarvis"** scores
+**0.997**, unrelated speech **0.000**.
+
+Four services now sit at **2.0 GB of 8 GB**, gateway 163 MB · display 129 MB ·
+camera 269 MB · voice 355 MB.
+
+---
+
+## The security position, stated plainly
+
+**A microphone authenticates nobody.** Everything it hears becomes text in an
+agent's prompt: a podcast, a television, a guest, a video call playing through
+a speaker in the room. None of them are the owner, and the Discord allowlist
+covers none of them.
+
+Three things are done about that, in descending order of how much they help.
+
+### 1. The lane is narrowed — verified, not assumed
+
+`platform_toolsets.webhook` strips the agent for this lane:
+
+```
+clarify  memory  vision  web  hermes_camera  hermes_display  hermes_voice
+```
+
+**`terminal` and `code_execution` are absent.** This was proven before any
+voice code was written, in both directions:
+
+| config | `terminal`? |
+|---|---|
+| webhook default (nothing set) | **no** |
+| `webhook: []` | **no** |
+| `webhook: [terminal]` *(control)* | **YES** — so the resolver is consulted, not ignored |
+| discord default *(control)* | YES, 20 toolsets |
+
+The runtime path was checked too: `webhook` is a first-class `Platform`,
+`_platform_config_key()` maps it to `"webhook"`, and `gateway/run.py:19265`
+calls `_get_platform_tools()` for every inbound message. The ACP
+counter-example in Hermes' docs — where `platform_toolsets` does *not* narrow —
+does not apply here.
+
+**Caveat:** `hermes_camera` and `hermes_display` are plugin toolsets and are
+force-included whatever the list says. They cannot be removed this way. Both
+are this project's own and benign, but "empty" does not mean zero.
+
+**`web` is deliberately included and is the residual risk.** It is what makes
+"what's the weather" work, and it is also an exfiltration path: text the mic
+picked up could in principle steer a fetch. Remove it from
+`platform_toolsets.webhook` if that trade is not worth it to you.
+
+### 2. The transcript is fenced
+
+The route prompt wraps it in delimiters and tells the agent to treat the
+contents as data rather than instructions. This is a real mitigation **and the
+weakest of the three**, because it is a request to a language model rather than
+a mechanism. It is written down here so nobody later mistakes it for a
+boundary.
+
+### 3. The rate is bounded
+
+Sliding windows, so they cannot wedge (trap 19): **3 s** minimum gap, **6 per
+minute**, **60 per hour**. A television talking to itself all evening reaches
+the hourly cap and stops. `tests/test_voice.py` proves each one recovers on its
+own with no restart.
+
+### The panel says when the mic is on
+
+`MIC` in the header while listening, `MIC ((` while actually capturing or
+transcribing, `MIC?` when it cannot tell. **Unknown fails toward ON**, exactly
+like the camera light.
+
+This indicator is **weaker evidence than `CAM`** and the difference is worth
+knowing. The camera light reads the kernel's runtime power state for the
+sensor, so a crashed or dishonest camera service cannot switch it off. There is
+no equivalent kernel fact for a microphone — ALSA exposes nothing comparable —
+so this trusts the voice service's own status file. A missing or unreadable
+file reads as *unknown*, not *off*.
+
+### What is still true of the transcript
+
+The service **never logs what was said**. Journald here is persistent, and a
+permanent record of everything spoken near this microphone is not something to
+create by accident. The journal gets length and timing only:
+
+```
+[voice] wake (0.99) -- listening
+[voice] 3.4s audio -> 47 chars in 1180ms
+[voice] delivered to Hermes (HTTP 202)
+```
+
+`status.json` carries **state, never content** — same rule as the camera's, and
+`tests/test_voice.py` pins it.
+
+---
+
+## Setup
+
+```bash
+./scripts/install-audio.sh      # mixer + WirePlumber exclusion (once)
+./scripts/install-voice.sh      # venv, models, ~5 min
+systemctl --user enable --now hermes-voice
+```
+
+`install-voice.sh` builds a **separate venv** from `cv-venv`. That one is
+`--system-site-packages` for picamera2 and is verified not to shadow the system
+numpy; voice needs ctranslate2 and onnxruntime, which have their own opinions,
+and the camera service must not inherit them. Two venvs, no shared blast
+radius. The renderer's no-dependencies property is untouched.
+
+**Do not `apt install piper`.** Debian's `piper` package is the **Piper mouse
+configuration GUI** — it installs `ratbagd` and has nothing to do with speech.
+Running `piper --model ...` then fails with `Unknown option --model`, which
+reads like version skew rather than the wrong program entirely. The TTS engine
+is `piper-tts` on PyPI, in the venv, and `voice/speak.py` resolves the binary
+from `sys.executable` rather than `PATH` for exactly this reason.
+
+---
+
+## Configuration
+
+| variable | default | |
+|---|---|---|
+| `HERMES_VOICE_WAKE` | `hey_jarvis` | also `alexa`, `hey_mycroft`, `hey_marvin` |
+| `HERMES_VOICE_WAKE_THRESHOLD` | `0.5` | raise if it triggers on the television |
+| `HERMES_VOICE_STT` | `base.en` | `tiny.en` is faster and worse |
+| `HERMES_VOICE_CARD` | `plughw:wm8960soundcard` | |
+
+**There is no pretrained "hey hermes."** openWakeWord ships `alexa`,
+`hey_jarvis`, `hey_marvin`, `hey_mycroft`. A custom phrase needs a training run
+on synthetic speech, best done off-Pi; the resulting `.onnx` drops straight in
+via `HERMES_VOICE_WAKE`.
+
+### Kill switches, ascending enforceability
+
+```bash
+touch ~/.config/hermes-pi/voice.disabled   # owner mute, survives reboot
+systemctl --user stop hermes-voice         # real off switch
+systemctl --user mask hermes-voice
+```
+
+Same honest caveat as the camera's: **none of these are enforceable against an
+agent that has a shell.** The voice lane does not have one, but the Discord
+lane does. They are conveniences for the owner, not security controls. The real
+controls are the Discord allowlist and physical access.
+
+---
+
+## Operating it
+
+```bash
+systemctl --user status hermes-voice
+journalctl --user -u hermes-voice -f
+python3 -c "import json;print(json.dumps(json.load(open('/run/user/1000/hermes-voice/status.json')),indent=2))"
+
+# test the output path without saying anything
+~/.local/share/hermes-pi/voice-venv/bin/python -m voice --say "testing"
+```
+
+| Symptom | Cause |
+|---|---|
+| `wake_error` set | wrong venv — the unit must use `voice-venv/bin/python` |
+| `stt_error` set | model not fetched; re-run `scripts/install-voice.sh` |
+| `tts_error` set | `piper-tts` missing, or the voice model was not downloaded |
+| Never wakes | say it as one phrase; check `wake_ready`; lower the threshold |
+| Wakes constantly | raise `HERMES_VOICE_WAKE_THRESHOLD` |
+| Cuts you off mid-sentence | `SILENCE_END` (0.8 s) or a noise floor measured while the room was loud — restart it in a quiet room |
+| Delivered but no reply | check the gateway; Discord may be down independently |
+| Hears itself | it should not — the wake detector is skipped while speaking |
+
+**Nothing spoken is recoverable after the fact.** Audio is never written to
+disk; the utterance lives in memory for the seconds it takes to transcribe and
+is then gone.

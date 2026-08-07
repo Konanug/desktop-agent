@@ -1,0 +1,31 @@
+[Unit]
+Description=Hermes Pi Voice - wake word, transcription, delivery to the agent
+Documentation=file:///home/alanmyin/projects/hermes-pi/docs/VOICE.md
+After=default.target hermes-audio.service
+Wants=hermes-audio.service
+# StartLimit* belong in [Unit], NOT [Service] -- in [Service] systemd logs
+# "Unknown key ... ignoring" and the crash-loop guard silently does not exist
+# (CLAUDE.md trap 14).
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alanmyin/projects/hermes-pi
+# The voice venv, NOT the cv-venv and not the system python: openwakeword and
+# faster-whisper live only here, and the camera service must not inherit their
+# numpy opinions.
+ExecStart=/home/alanmyin/.local/share/hermes-pi/voice-venv/bin/python -m voice
+Restart=always
+RestartSec=3
+Nice=5
+# Wake word is 7.8% of a core continuously; STT spikes to ~1 core for a couple
+# of seconds per utterance. 150% leaves room for the spike without letting a
+# runaway starve the gateway or the display.
+CPUQuota=150%
+Environment=PYTHONUNBUFFERED=1
+# No MemoryMax: cgroup_disable=memory makes it silently ignored on this box,
+# same as the other units.
+
+[Install]
+WantedBy=default.target

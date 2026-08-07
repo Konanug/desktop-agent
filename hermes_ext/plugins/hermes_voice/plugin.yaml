@@ -1,0 +1,5 @@
+name: hermes_voice
+version: 1.0.0
+description: Speak a reply out loud through the Pi's ReSpeaker HAT.
+author: hermes-pi
+entry_point: __init__.py
