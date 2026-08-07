@@ -14,14 +14,23 @@ by one person, and every palette or timing tweak would mean redrawing. Here a
 change is an edit and a re-run. These are still real rendered frames -- they
 are generated, not faked.
 
-WHY FULL WIDTH, BOUNDED HEIGHT
-Measured (tools/bench_spi.py): fbtft is ROW-granular, not rectangle-granular.
-A 240x240 centred blit transmits 228.8 KiB -- the whole 480-wide rows -- and a
-480x240 blit costs the same (ratio 1.00x). Narrowing a region buys nothing.
+WHY FULL WIDTH, BOUNDED HEIGHT -- AND WHY THAT REASON IS NOW HISTORY
+This shape came from SPI. Measured (tools/bench_spi.py): fbtft was ROW-granular,
+not rectangle-granular, so a 240x240 centred blit transmitted the whole 480-wide
+rows -- 228.8 KiB, identical to a 480x240 blit. Width was free; only row count
+cost. Frames were therefore full width and bounded in height, and the height
+bound WAS the frame rate.
 
-So frames are FULL WIDTH (free) and bounded in HEIGHT (the only thing that
-costs). 480x240 = 240 dirty rows ~= 6.3 fps at 16 MHz, ~12.6 at 32 MHz. The
-extra width is spent on peripheral detail that would otherwise be black.
+The SPI panel was replaced by an HDMI screen on 2026-08-06 and none of that
+applies any more: the framebuffer is memory a display controller scans out on
+its own, so there is no per-row transmit cost and no bandwidth ceiling. The
+geometry below is now purely a LAYOUT choice -- a band that leaves room for the
+header, the label strip and the footer -- and it could be full-screen tomorrow
+if that looked better.
+
+What has NOT changed is that `fps` here is the playback rate of a FIXED frame
+count, so raising it shortens the loop period rather than smoothing the motion.
+Smoother motion means rendering more frames, which costs disk, not bus.
 
 Format (see pack_format.md):
     <name>.pack  raw little-endian RGB565, frames * h * w * 2 bytes
@@ -41,9 +50,16 @@ from pathlib import Path
 
 import numpy as np
 
-WIDTH = 480         # full panel width -- costs nothing extra (row-granular)
-HEIGHT = 232        # dirty rows; THIS is what sets the frame rate
-DIAM = 224          # diameter of the central visual within that band
+# Geometry, derived from the panel and the chrome that surrounds the band.
+# display/render.py scales its chrome from a 480x320 reference by height, so
+# these follow the same 1.5x to 800x480 and the composition is unchanged.
+#   header 39  ->  band starts at 42 (3px gap)
+#   footer at 435, label strip 33 tall, 2px gap  ->  band ends at 400
+PANEL_W, PANEL_H = 800, 480
+WIDTH = 800         # full panel width
+HEIGHT = 358        # band height, sized to leave room for the label strip
+ORIGIN_Y = 42       # directly under the scaled 39px header
+DIAM = 345          # diameter of the central visual within that band
 SUPERSAMPLE = 2     # render at 2x and box-filter down: cheap anti-aliasing,
                     # which matters because RGB565 banding makes hard edges
                     # look worse than they would on a 24-bit panel.
@@ -271,14 +287,17 @@ def main() -> int:
     ap.add_argument("--width", type=int, default=WIDTH)
     ap.add_argument("--height", type=int, default=HEIGHT)
     ap.add_argument("--diam", type=int, default=DIAM)
+    ap.add_argument("--panel-width", type=int, default=PANEL_W)
+    ap.add_argument("--origin-y", type=int, default=ORIGIN_Y)
     ap.add_argument("--only", help="render just this pack")
     args = ap.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    # Centred horizontally; vertically inside the body zone (header is 30px).
-    # Full width, sitting directly under the 26px header.
-    origin = ((480 - args.width) // 2, 28)
+    # Centred horizontally, sitting directly under the header. The panel width
+    # is a parameter rather than a literal: it was hardcoded to 480 and silently
+    # mis-centred every pack the moment the screen changed.
+    origin = ((args.panel_width - args.width) // 2, args.origin_y)
 
     total = 0
     for name, (style, frames, fps, loop) in PACKS.items():

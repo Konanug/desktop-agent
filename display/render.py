@@ -104,22 +104,41 @@ class Zone:
     _hash: int = 0
 
 
+# The layout below was tuned by eye against a 480x320 panel. When that panel
+# was replaced by an 800x480 HDMI screen, every zone height, font size and
+# margin here was still in raw pixels, and would have rendered the whole chrome
+# at 2/3 size on a screen with 2.4x the area. Scaling from a declared reference
+# keeps the proportions that were actually tuned, and means the next screen
+# needs no edits at all.
+_REF_W, _REF_H = 480, 320
+
+
 class Renderer:
     def __init__(self, fb, width: int, height: int):
         self.fb = fb
         self.w, self.h = width, height
-        self.header = Zone(0, 26)
-        self.footer = Zone(height - 30, 30)
+        # Scale on HEIGHT alone, deliberately. Chrome is a stack of horizontal
+        # bands, so its cost and its readability are set by how tall things
+        # are; scaling text by a width ratio on a wider aspect would inflate it
+        # for no reason and eat the body.
+        self.scale = height / _REF_H
+
+        self.header = Zone(0, self._s(26))
+        self.footer = Zone(height - self._s(30), self._s(30))
         self.body = Zone(self.header.h, self.footer.y - self.header.h)
         # Set properly by draw_label_strip once the pack geometry is known.
-        self.label = Zone(self.footer.y - 22, 22)
+        self.label = Zone(self.footer.y - self._s(22), self._s(22))
 
-        self.f_small = _font("DejaVuSans.ttf", 13)
-        self.f_mid = _font("DejaVuSans-Bold.ttf", 17)
-        self.f_big = _font("DejaVuSans-Bold.ttf", 30)
-        self.f_tiny = _font("DejaVuSans.ttf", 11)
+        self.f_small = _font("DejaVuSans.ttf", self._s(13))
+        self.f_mid = _font("DejaVuSans-Bold.ttf", self._s(17))
+        self.f_big = _font("DejaVuSans-Bold.ttf", self._s(30))
+        self.f_tiny = _font("DejaVuSans.ttf", self._s(11))
 
     # -- helpers ---------------------------------------------------------
+    def _s(self, v: float) -> int:
+        """Scale a reference-geometry pixel value to this panel. Never 0."""
+        return max(1, round(v * self.scale))
+
     def _centre(self, d: ImageDraw.ImageDraw, y: int, text: str, font, fill, w: int) -> None:
         tw = d.textbbox((0, 0), text, font=font)[2]
         d.text(((w - tw) // 2, y), text, font=font, fill=fill)
@@ -140,8 +159,9 @@ class Renderer:
         d = ImageDraw.Draw(img)
         _, accent = _LABEL.get(r.screen, ("", CYAN))
 
-        d.ellipse((10, 12, 20, 22), fill=accent)
-        d.text((28, 7), "HERMES", font=self.f_mid, fill=WHITE)
+        s = self._s
+        d.ellipse((s(10), s(12), s(20), s(22)), fill=accent)
+        d.text((s(28), s(7)), "HERMES", font=self.f_mid, fill=WHITE)
 
         # Camera tally light.
         #
@@ -159,9 +179,9 @@ class Renderer:
             on = camera_on is True
             col = RED if on else AMBER
             label = "CAM" if on else "CAM?"
-            x = 110
-            d.ellipse((x, 12, x + 9, 21), fill=col)
-            d.text((x + 14, 8), label, font=self.f_tiny, fill=col)
+            x = s(110)
+            d.ellipse((x, s(12), x + s(9), s(21)), fill=col)
+            d.text((x + s(14), s(8)), label, font=self.f_tiny, fill=col)
 
         # The Pi has no battery-backed RTC. Until NTP syncs (~34 s after boot)
         # the clock is plausibly wrong, so we show placeholders instead of a
@@ -174,9 +194,9 @@ class Renderer:
             stamp, date, col = "--:--", "no time sync", GREY
 
         tw = d.textbbox((0, 0), stamp, font=self.f_mid)[2]
-        d.text((self.w - tw - 10, 6), stamp, font=self.f_mid, fill=col)
+        d.text((self.w - tw - s(10), s(6)), stamp, font=self.f_mid, fill=col)
         dw = d.textbbox((0, 0), date, font=self.f_tiny)[2]
-        d.text((self.w - dw - 10, 20), date, font=self.f_tiny, fill=GREY)
+        d.text((self.w - dw - s(10), s(20)), date, font=self.f_tiny, fill=GREY)
 
         d.line((0, self.header.h - 1, self.w, self.header.h - 1), fill=DIM)
         return self._flush(self.header, img)
@@ -193,10 +213,12 @@ class Renderer:
         img = Image.new("RGB", (self.w, self.body.h), BLACK)
         d = ImageDraw.Draw(img)
         label, accent = _LABEL.get(r.screen, (r.screen.value.upper(), CYAN))
-        self._centre(d, self.body.h // 2 - 34, label, self.f_big, accent, self.w)
+        self._centre(d, self.body.h // 2 - self._s(34), label, self.f_big,
+                     accent, self.w)
         sub = self._subtitle(r)
         if sub:
-            self._centre(d, self.body.h // 2 + 8, sub[:44], self.f_small, GREY, self.w)
+            self._centre(d, self.body.h // 2 + self._s(8), sub[:44],
+                         self.f_small, GREY, self.w)
         return self._flush(self.body, img)
 
     def draw_label_strip(self, r: Resolved, top: int, height: int) -> int:
@@ -213,7 +235,8 @@ class Renderer:
         label, accent = _LABEL.get(r.screen, (r.screen.value.upper(), CYAN))
         sub = self._subtitle(r)
         text = f"{label}   {sub[:30]}" if sub else label
-        self._centre(d, max(0, (height - 15) // 2), text, self.f_small, accent, self.w)
+        self._centre(d, max(0, (height - self._s(15)) // 2), text,
+                     self.f_small, accent, self.w)
         return self._flush(self.label, img)
 
     def _usage_meter(self, d: ImageDraw.ImageDraw, usage: dict | None) -> str:
@@ -239,7 +262,8 @@ class Renderer:
         No data, or data older than five minutes, draws the plain rule again --
         a stale meter would assert a number that is no longer true.
         """
-        x0, x1, top, h = 10, self.w - 10, 1, 4
+        s = self._s
+        x0, x1, top, h = s(10), self.w - s(10), 1, s(4)
         fresh = bool(usage) and (time.time() - float(usage.get("updated_at") or 0)) < 300
 
         if not fresh:
@@ -264,7 +288,7 @@ class Renderer:
             return _usage_text(usage)
 
         colour = RED if frac >= 0.9 else AMBER if frac >= 0.75 else CYAN
-        seg_w, gap = 9, 3
+        seg_w, gap = s(9), s(3)
         n = max(1, (x1 - x0 + gap) // (seg_w + gap))
         lit = int(round(min(1.0, max(0.0, float(frac))) * n))
         for i in range(n):
@@ -278,6 +302,7 @@ class Renderer:
                     usage: dict | None = None) -> int:
         img = Image.new("RGB", (self.w, self.footer.h), BLACK)
         d = ImageDraw.Draw(img)
+        s = self._s
         usage_label = self._usage_meter(d, usage)
 
         link_ok = bool(state) and r.screen not in (
@@ -286,24 +311,24 @@ class Renderer:
         model_ok = bool(state) and r.screen != Screen.AUTH_ERROR and health.unit_active
 
         def badge(x: int, text: str, ok: bool) -> int:
-            d.ellipse((x, 13, x + 8, 21), fill=GREEN if ok else RED)
-            d.text((x + 14, 10), text, font=self.f_tiny, fill=GREY)
-            return x + 14 + d.textbbox((0, 0), text, font=self.f_tiny)[2] + 18
+            d.ellipse((x, s(13), x + s(8), s(21)), fill=GREEN if ok else RED)
+            d.text((x + s(14), s(10)), text, font=self.f_tiny, fill=GREY)
+            return x + s(14) + d.textbbox((0, 0), text, font=self.f_tiny)[2] + s(18)
 
-        x = badge(12, "discord", link_ok)
+        x = badge(s(12), "discord", link_ok)
         badge(x, "model", model_ok)
 
-        right = self.w - 12
+        right = self.w - s(12)
         if usage_label:
             uw = d.textbbox((0, 0), usage_label, font=self.f_tiny)[2]
-            d.text((right - uw, 10), usage_label, font=self.f_tiny, fill=CYAN)
-            right -= uw + 14
+            d.text((right - uw, s(10)), usage_label, font=self.f_tiny, fill=CYAN)
+            right -= uw + s(14)
 
         if state and health.unit_active:
             up = int(now - float(state.get("started_at") or now))
             txt = f"up {up//3600}h {(up%3600)//60:02d}m" if up >= 3600 else f"up {up//60}m {up%60:02d}s"
             tw = d.textbbox((0, 0), txt, font=self.f_tiny)[2]
-            d.text((right - tw, 10), txt, font=self.f_tiny, fill=GREY)
+            d.text((right - tw, s(10)), txt, font=self.f_tiny, fill=GREY)
 
         return self._flush(self.footer, img)
 

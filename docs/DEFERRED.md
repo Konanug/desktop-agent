@@ -88,7 +88,14 @@ Log timestamps from the first ~34s of any boot are unreliable. When correlating 
 
 ---
 
-## D-3 — Idle panel saturates the SPI bus (measured 2026-08-05)
+## D-3 — Idle panel saturates the SPI bus (measured 2026-08-05) — **CLOSED, MOOT 2026-08-06**
+
+> The SPI panel was replaced by an 800x480 HDMI screen. There is no bus to
+> saturate: the framebuffer is memory the display controller scans out on its
+> own, so an idle repaint costs a memcpy and nothing else. The proposed fix
+> (row-span dirty detection in `player.py`) was never implemented and no longer
+> needs to be. Kept below for the reasoning, which was sound.
+
 
 **Status: known, unfixed, not urgent.** 0 errors, 0 timeouts, thermals fine — waste, not a fault.
 

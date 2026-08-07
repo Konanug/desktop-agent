@@ -111,13 +111,17 @@ def show_image(fb, renderer, resolved, request) -> None:
 def _clear_body(fb, renderer) -> None:
     """Blank the whole body zone.
 
-    Needed when leaving an IMAGE screen. The camera preview is 264 rows tall
-    and fills the body exactly; the animation that replaces it is 232 rows at
-    y=28, and the label strip covers 262..290. That leaves rows 26, 27, 260 and
-    261 painted by nobody, so the last few lines of the previous photo survive
-    as a bright band above the state label -- which looks like a rendering
-    fault and is, in a small way, the panel showing something that is no longer
-    true.
+    Needed when leaving an IMAGE screen. The camera preview fills the body
+    exactly; the animation that replaces it does not -- it is a band with a
+    small gap under the header and another above the label strip. Those few
+    rows are painted by NOBODY, so the last lines of the previous photo survive
+    as a bright band above the state label, which looks like a rendering fault
+    and is, in a small way, the panel showing something no longer true.
+
+    The exact row numbers used to be written here (26, 27, 260, 261) and went
+    stale the moment the 480x320 SPI panel became an 800x480 HDMI one. The
+    zones are computed, so the fix is: clear the whole body and do not enumerate
+    which rows are the leftovers.
     """
     import numpy as np
     h = renderer.footer.y - renderer.header.h
@@ -131,7 +135,11 @@ def _handle_signal(signum, _frame):
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="hermes-display")
-    ap.add_argument("--fb", default="fb0")
+    # Default None, not "fb0": panel.resolve() finds our framebuffer by driver
+    # name. The index moves when another display driver is loaded (enabling KMS
+    # for an HDMI screen does it), and painting into the wrong one succeeds
+    # silently. Pass --fb to override deliberately.
+    ap.add_argument("--fb", default=None)
     ap.add_argument("--unit", default="hermes-gateway.service")
     ap.add_argument("--once", action="store_true", help="render one frame and exit (for testing)")
     ap.add_argument("--packs", default=str(Path(__file__).resolve().parent.parent / "assets" / "anim"),

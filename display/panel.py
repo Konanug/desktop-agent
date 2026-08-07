@@ -5,14 +5,28 @@ about framebuffers, pixel formats, or SPI. Swapping the panel -- a different
 SPI TFT, or later an HDMI/DRM screen -- means rewriting this file alone.
 
 Current hardware (discovered at runtime, not hardcoded):
-    ILI9486 3.5" SPI TFT, 480x320, RGB565, /dev/fb0, via fbtft/fb_ili9486.
+    Waveshare HDMI LCD, 800x480, RGB565, via vc4 KMS fbdev emulation.
 
-WHY DIRTY RECTANGLES MATTER HERE
-SPI is the bottleneck, not the CPU. At the stock 16 MHz the bus moves roughly
-2 Mbit/s, and a full 480x320x16bpp frame is 307,200 bytes = 2.46 Mbit -- about
-5-6 fps if you repaint everything, every time. Pushing only the changed
-rectangle is the entire performance strategy: a 40x20 blink costs ~1.6 KB
-(~1 ms) instead of 300 KB (~170 ms).
+    Until 2026-08-06 this was an ILI9486 3.5" SPI TFT at 480x320 on fbtft. The
+    swap changed less than expected: the pixel format is RGB565 either way, so
+    pack_rgb565() is untouched and only the geometry and the driver name moved.
+
+WHAT THE HDMI SWAP DELETED
+Every bandwidth constraint this file used to be organised around. On SPI the
+bus was the bottleneck: 2,562,838 B/s measured at 32 MHz, one 480x232 frame
+costing 246,499 TRANSMITTED bytes, a hard ceiling of 10.37 fps, and a design
+that budgeted dirty ROWS because fbtft is row-granular. None of that survives
+here. The framebuffer is memory the display controller scans out on its own;
+writing to it costs a memcpy and nothing else, and there is no per-row cost, no
+transmit budget, and no error/timeout counter to watch.
+
+Dirty rectangles are therefore now a CPU optimisation only, not a bandwidth
+one, and a much weaker one. They are kept because they are already written and
+still save real work, but nothing here should be traded away to protect them.
+
+The relevant number changed from "bytes on the bus" to "bytes memcpy'd":
+800x480x2 = 768,000 B per full frame, against memory bandwidth measured in
+GB/s. Full-frame repaints are affordable now; they were not before.
 """
 
 from __future__ import annotations
@@ -24,6 +38,14 @@ from dataclasses import dataclass
 import numpy as np
 
 SYSFS = "/sys/class/graphics"
+
+# The driver that backs this panel. Resolved BY NAME because the index is not
+# ours to rely on -- see resolve().
+#
+# `vc4drmfb` since 2026-08-06: the ILI9486 SPI panel was replaced by a Waveshare
+# HDMI LCD, so this is now DRM's fbdev emulation rather than fbtft. Overridable
+# so a bring-up on other hardware does not need a code edit.
+PANEL_DRIVER = os.environ.get("HERMES_PANEL_DRIVER", "vc4drmfb")
 
 
 @dataclass(frozen=True)
@@ -43,8 +65,11 @@ class PanelInfo:
     def padded(self) -> bool:
         """True when rows are wider than their pixels (stride > w * bytes/px).
 
-        False on this panel (stride 960 == 480 * 2), which lets full-frame
-        writes be a single contiguous memcpy instead of a per-row loop.
+        False on this panel (stride 1600 == 800 * 2), which lets full-frame
+        writes be a single contiguous memcpy instead of a per-row loop. It was
+        also false on the old SPI panel (960 == 480 * 2), so the fast path has
+        never actually been exercised against a padded framebuffer -- do not
+        assume it is proven if you change hardware again.
         """
         return self.stride != self.width * (self.bpp // 8)
 
@@ -54,12 +79,57 @@ def _read(fb: str, attr: str) -> str:
         return f.read().strip()
 
 
-def discover(fb: str = "fb0") -> PanelInfo:
+def resolve(driver: str = PANEL_DRIVER) -> str:
+    """Find the framebuffer belonging to `driver`, by NAME, not by index.
+
+    fb0 IS NOT OURS TO ASSUME. The index is assigned in registration order, so
+    it depends on which drivers are loaded and how fast each one probes. With
+    only fbtft present the panel is fb0; add a second display driver -- enabling
+    KMS for an HDMI screen does exactly this -- and the panel can become fb1
+    without a single line of this project changing. The renderer would then
+    write the Hermes visual into the other screen's memory, at the wrong
+    geometry, and report success.
+
+    This is trap 13 in a new place. The camera learned it the same way: "is the
+    sensor in use" could not be answered from /dev/video0 either, and
+    protocol.sensor_power_path() resolves the imx708 by name for the same
+    reason. The panel kept a hardcoded index until an HDMI screen was plugged
+    in and made the risk real.
+
+    Raises rather than falling back to fb0. A renderer that cannot find its own
+    panel must say so, not paint into whatever is at index zero.
+    """
+    try:
+        candidates = sorted(os.listdir(SYSFS))
+    except OSError as e:
+        raise RuntimeError(f"no framebuffers at {SYSFS}: {e}") from None
+    found = {}
+    for fb in candidates:
+        if not fb.startswith("fb"):
+            continue
+        try:
+            found[fb] = _read(fb, "name")
+        except OSError:
+            continue
+    for fb, name in found.items():
+        if name == driver:
+            return fb
+    raise RuntimeError(
+        f"no framebuffer with driver {driver!r}; found "
+        + (", ".join(f"{k}={v}" for k, v in found.items()) or "none")
+        + ". Is the tft35a overlay still in /boot/firmware/config.txt?")
+
+
+def discover(fb: str | None = None) -> PanelInfo:
     """Read geometry from sysfs rather than assuming it.
 
     Guards against the LCD-show class of bug, where a stale config names the
     wrong device or resolution and everything silently renders into nothing.
+
+    `fb` defaults to whichever framebuffer the panel driver actually owns. Pass
+    an explicit name only to override deliberately.
     """
+    fb = resolve() if fb is None else fb
     w, h = (int(x) for x in _read(fb, "virtual_size").split(","))
     return PanelInfo(
         device=f"/dev/{fb}",

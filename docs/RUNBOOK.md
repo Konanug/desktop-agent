@@ -281,24 +281,90 @@ systemctl status hermes-fbcon-detach
 sudo systemctl restart hermes-fbcon-detach
 ```
 
-### Choppy or torn animation
+### Screen is blank or shows the wrong thing
+
+The panel is an **HDMI** screen as of 2026-08-06 (it was an ILI9486 SPI TFT
+before). The SPI diagnostics that used to live here are gone with it —
+`tools/bench_spi.py` measures a device that is no longer attached.
+
 ```bash
-cat /sys/class/spi_master/spi0/spi0.0/statistics/errors    # expect 0
-cat /sys/class/spi_master/spi0/spi0.0/statistics/timedout  # expect 0
-python3 tools/bench_spi.py --seconds 10
+# Is the screen even detected? EDID is 0 bytes on this panel -- that is normal.
+for c in /sys/class/drm/card1-HDMI-A-*/; do
+  echo "$(basename $c): $(cat $c/status)"; done
+
+# Is the framebuffer the one we think it is?
+cat /sys/class/graphics/fb0/name          # expect vc4drmfb
+cat /sys/class/graphics/fb0/virtual_size  # expect 800,480
 ```
-Non-zero counters at 32 MHz mean the overclock is unstable. Roll back:
-```bash
-sudo cp /boot/firmware/config.txt.pre32mhz /boot/firmware/config.txt
-sudo reboot
+
+`status=disconnected` is **physical**: micro-HDMI not seated (Pi 5 uses micro,
+and adapters fail constantly), wrong port (HDMI-A-1 is the one nearest USB-C),
+or the panel's own USB power not connected.
+
+**The mode is forced** in `/boot/firmware/cmdline.txt`:
+`video=HDMI-A-1:800x480@60D`. It has to be — the panel returns no EDID, so
+without it the kernel guesses from a generic fallback list and picked 1024x768,
+which overflowed the screen. The `D` suffix forces the connector on regardless
+of hotplug detect.
+
+**Do not try to force 480x320.** vc4 rejects it: CVT gives an 11.15 MHz pixel
+clock, below HDMI's 25 MHz minimum. The old Waveshare `hdmi_cvt 480 320 60 6`
+recipe worked on Pi 4's firmware path and does nothing on a Pi 5.
+
+### The renderer will not start
+
 ```
-Then set `_FPS = 6` in `tools/render_frames.py`, regenerate, and lower `fps` in
-`assets/anim/*.json`.
+no framebuffer with driver 'vc4drmfb'; found fb0=...
+```
+
+`display/panel.py` resolves its framebuffer **by driver name**, not by index,
+and refuses rather than painting into whatever sits at `fb0`. That message
+means KMS did not come up — check `dtoverlay=vc4-kms-v3d` is in `config.txt`.
+
+Override with `HERMES_PANEL_DRIVER=<name>` or `--fb fbN` if you know better.
 
 ### Everything is slow / low frame rate
-Frame rate is set by **dirty rows**, not width — fbtft is row-granular
-(docs/HARDWARE.md). Shorten `HEIGHT` in `tools/render_frames.py`; widening or
-narrowing does nothing.
+
+No longer a bandwidth question — there is no bus. A full frame is a 768,000 B
+memcpy. If the animation stutters it is CPU or the loop, not the display.
+Baseline is **1.10% of one core, 77 MB RSS**.
+
+`fps` in `assets/anim/*.json` is the playback rate of a **fixed frame count**,
+so raising it makes the loop spin faster, not smoother. Smoother needs more
+frames rendered (`tools/render_frames.py`), which costs disk.
+
+---
+
+## Audio (ReSpeaker 2-Mic Pi HAT)
+
+WM8960 codec: control on I2C 0x1a, audio on I2S. Enabled by
+`dtoverlay=wm8960-soundcard` in `config.txt`.
+
+```bash
+cat /proc/asound/cards                    # expect card 2: wm8960soundcard
+speaker-test -D plughw:wm8960soundcard -c2 -t sine -f 440 -l 1
+arecord -D plughw:wm8960soundcard -f S16_LE -r 16000 -c2 -d 3 /tmp/t.wav
+```
+
+**Card present but silent** is almost always the WM8960's default routing: the
+DAC is not connected to the output mixer out of the box.
+
+```bash
+amixer -c wm8960soundcard sset 'Left Output Mixer PCM'  on
+amixer -c wm8960soundcard sset 'Right Output Mixer PCM' on
+amixer -c wm8960soundcard sset 'Headphone' 110
+amixer -c wm8960soundcard sset 'Speaker'   110
+sudo alsactl store                        # survives reboot via alsa-restore
+```
+
+That is already applied and stored. Speaker/headphone output has **never been
+confirmed by ear** — nothing was connected when it was set up. Both mics were
+verified live (peak 328/250 against silence).
+
+`i2cdetect -y 1` shows 0x1a but `i2cget` fails — that is correct and not a
+fault. The WM8960's registers are **write-only**.
+
+Nothing in this project uses the audio yet.
 
 ---
 

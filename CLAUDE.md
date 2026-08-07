@@ -13,8 +13,8 @@ that feeds it real agent state, and the service definitions that keep it alive
 unattended.
 
 Reached over **Discord** from any device. Inference runs on the user's
-**ChatGPT Plus subscription** — no API key, nothing billed. A 3.5" SPI panel
-shows a JARVIS-style visual that tracks what the agent is actually doing.
+**ChatGPT Plus subscription** — no API key, nothing billed. An 800x480 HDMI
+panel shows a JARVIS-style visual that tracks what the agent is actually doing.
 
 **Status: built, working, all 9 planned phases complete.** 17 commits.
 Everything below is verified on real hardware, not assumed.
@@ -61,7 +61,7 @@ unit is dead.
 │   └── plugins/hermes_camera/        camera_look/_watch — hands the model real pixels
 ├── tools/
 │   ├── render_frames.py  generates the visual → assets/anim/*.pack
-│   ├── bench_spi.py      measures REAL SPI throughput
+│   ├── bench_spi.py      ⚠ DEAD — measured the SPI panel, removed 2026-08-06
 │   ├── claude_usage.py   rolling 5h Claude token usage → usage.json
 │   └── camera_probe.py   verifies the camera is LIVE and measures its rate
 ├── scripts/
@@ -74,8 +74,9 @@ unit is dead.
                           STATE-CONTRACT, DEFERRED, CAMERA
 ```
 
-`assets/anim/*.pack` is **gitignored and generated** (~95 MB, 8 packs).
-Rebuild: `python3 tools/render_frames.py --out assets/anim` (~2 min).
+`assets/anim/*.pack` is **gitignored and generated** (~243 MB, 8 packs — it
+was ~95 MB at 480x232; 800x358 is 2.7x the pixels).
+Rebuild: `python3 tools/render_frames.py --out assets/anim` (~5 min).
 `fps` lives only in the `.json` sidecars — changing it needs no re-render.
 
 ---
@@ -86,7 +87,8 @@ Rebuild: `python3 tools/render_frames.py --out assets/anim` (~2 min).
 |---|---|
 | Host | Raspberry Pi 5, Debian 13 trixie, aarch64, 7.9 GB RAM |
 | User | `alanmyin` — **everything runs as this user, never root** |
-| Panel | ILI9486 SPI TFT, 480×320 RGB565, `/dev/fb0`, **32 MHz** |
+| Panel | Waveshare HDMI LCD, **800×480** RGB565, `/dev/fb0` via vc4 KMS fbdev. Mode is FORCED in `cmdline.txt` (`video=HDMI-A-1:800x480@60D`) because the panel returns **zero bytes of EDID** |
+| Audio | ReSpeaker 2-Mic Pi HAT (WM8960, I2C 0x1a + I2S). ALSA card `wm8960soundcard`. Mics verified live; **speaker output never confirmed — nothing was plugged in** |
 | Hermes | v0.20.0 at `~/.hermes/`, `hermes` on PATH |
 | Model | `openai-codex/gpt-5.6-terra`; auxiliary → `gpt-5.6-luna` |
 | Services | `hermes-gateway`, `hermes-display`, `hermes-camera`, `hermes-usage` (user) · `hermes-fbcon-detach` (system) |
@@ -109,21 +111,32 @@ both hit in this project.
 
 Verify with `sudo sshd -T`, never by reading the file.
 
-**2. fbtft is ROW-granular, not rectangle-granular.** A 240×240 blit transmits
-the full 480-wide rows — measured 228.8 KiB, same as 480×240 (ratio 1.00×).
-**Width is free; only row count costs.** "Shrink the region to save bandwidth"
-is false here. Frame rate = dirty rows × 480 × 2 bytes.
+**2. ⚠ HISTORICAL — the SPI panel was removed 2026-08-06.** Traps 2, 4, 5 and
+10 all describe the ILI9486/fbtft/SPI bus, which no longer exists. They are
+kept because the *reasoning* recurs and because much of the code still carries
+its shape, but do not treat their numbers as current. **There is no bus budget
+any more**: the framebuffer is memory a display controller scans out on its
+own, so writes cost a memcpy and nothing else. `tools/bench_spi.py` measures a
+device that is gone.
+
+Original: fbtft was ROW-granular, not rectangle-granular. A 240×240 blit
+transmitted the full 480-wide rows — measured 228.8 KiB, same as 480×240 (ratio
+1.00×). Width was free; only row count cost.
 
 **3. Animation motion must use INTEGER cycles per loop.** Float multipliers
 leave a remainder at the wrap and the rings visibly snap back a few degrees,
 once per loop, forever. `tests/test_anim_seam.py` catches it.
 
-**4. Timing framebuffer writes measures memcpy, not SPI.** fbtft defers I/O to
-a workqueue. Use `tools/bench_spi.py`, which reads the kernel's own
-`/sys/class/spi_master/spi0/spi0.0/statistics/bytes_tx`.
+**4. HISTORICAL (see 2). Timing framebuffer writes measured memcpy, not SPI.**
+fbtft deferred I/O to a workqueue. `tools/bench_spi.py` read the kernel's own
+`bytes_tx` counter. On HDMI a memcpy is now genuinely all there is, so timing
+the write IS the honest measurement — the opposite of what this trap warned.
 
-**5. Raising the SPI clock alone does nothing.** Pack `fps` in the sidecar JSON
-must be raised to match, or nothing asks for the extra capacity.
+**5. HISTORICAL (see 2). Raising the SPI clock alone did nothing** — pack `fps`
+had to rise to match. The surviving half is still true and still bites:
+**`fps` is the playback rate of a FIXED frame count**, so raising it shortens
+the loop period rather than smoothing motion. Smoother motion means rendering
+more frames, which now costs disk rather than bus.
 
 **6. The Pi has no battery-backed RTC.** For ~34 s after boot the clock is
 confidently wrong (it resumes near last shutdown). The header shows `--:--`
@@ -142,11 +155,12 @@ instead of a steady 83.3 ms — a visible hitch four times a second. The loop no
 sleeps to `player.next_due()`, which holds intervals to ±1 ms. Any future frame
 rate must keep this; do not go back to a bare `time.sleep(POLL)`.
 
-**10. Asking for more fps than the bus carries makes it JUMPY, not fast.** At
-12 fps the demand was 2,672,640 B/s against 2,562,838 available; roughly one
-frame in 23 could not be sent and the wall-clock index skipped to catch up.
-Stay meaningfully below the ceiling — 9 fps leaves 13.3% headroom. 10 fps fits
-arithmetically but leaves only 3.6%, so any slow blit becomes a visible skip.
+**10. HISTORICAL (see 2). Asking for more fps than the bus carried made it
+JUMPY, not fast.** At 12 fps the demand was 2,672,640 B/s against 2,562,838
+available; roughly one frame in 23 could not be sent and the wall-clock index
+skipped to catch up. 9 fps was chosen for 13.3% headroom. **On HDMI there is no
+such ceiling** — the packs still run at 9 fps only because that is the rate
+their integer cycle counts were composed for.
 
 **11. Zone dirty-hashing stops chrome being BLITTED, not DRAWN.** Every loop
 iteration built three PIL images and rasterised text purely to hash the result
@@ -364,30 +378,29 @@ python3 tests/test_gestures.py          # a held gesture fires once; limits cann
 ## Measured performance (do not regress)
 
 ```
-SPI 32 MHz · 2,562,838 B/s · 0 errors · 0 timeouts
-one 480x232 frame costs 246,499 B TRANSMITTED  ->  ceiling 10.37 fps
-running at 9 fps = 2,221,200 B/s = 86.7% of bus, 13.3% headroom
-display  0.73% CPU · 52 MB RSS      gateway  0.8% CPU · 163 MB RSS
+CURRENT — HDMI, 800x480 RGB565, vc4 KMS fbdev
+display  1.10% CPU · 77 MB RSS      gateway  0.8% CPU · 163 MB RSS
+camera (gesture subscriber attached)  71.9% of one core
 ```
 
-**Budget on transmitted bytes, not pixel bytes.** A 480x232 frame is 222,720 B
-of pixels but **246,499 B cross the bus** — fbtft's deferred IO is PAGE
-granular, so a 232-row write dirties partial pages at both ends and ~25 extra
-rows go out. Measured by playing one pack at 5 and 10 fps and solving. Costing
-it by pixel count overstates capacity by 11% and was how fps came to be set
-above what the hardware could carry.
+**There is no display bandwidth budget any more.** A full 800x480 frame is
+768,000 B memcpy'd into memory the display controller scans out by itself.
+Against DRAM bandwidth that is nothing, and there is no error counter, no
+timeout counter, and no transmit ceiling to watch. Display cost went from
+0.73%/52 MB to **1.10%/77 MB** for 2.4x the pixels.
 
-**"Idle writes zero SPI bytes" is FALSE and has been since animation packs
-landed.** It was true in Phase 6, when the body was a static text screen.
-`player.due()` now advances every frame in every state including idle, and each
-advance blits all 232 rows: **2.2 MB/s sustained, permanently**. Zone
-dirty-hashing still gives the *chrome* zones zero cost, which is the part that
-remains true. Not a fault — 0 errors, thermals fine — but it is waste, and the
-fix (row-span dirty detection in `player.py`) is unimplemented.
+**Superseded, for context on why the code looks the way it does:** on SPI at
+32 MHz the bus carried 2,562,838 B/s; one 480x232 frame cost 246,499 B
+*transmitted* (not the 222,720 B of pixels — fbtft's deferred IO was PAGE
+granular, so ~25 extra rows went out), giving a hard 10.37 fps ceiling and a
+design that budgeted dirty ROWS. Idle still blitted 2.2 MB/s permanently, which
+was documented here as waste with an unimplemented fix (D-3, row-span dirty
+detection). **D-3 is now moot** — the thing it was saving no longer costs
+anything.
 
-The 2.9% CPU figure that used to sit here was also from the text-screen era.
-Measured on the animated build, the ORIGINAL code cost 6.36%; it is 0.73% now
-because chrome rasterising is throttled (see trap 11).
+Zone dirty-hashing and the throttled chrome rasterising (trap 11) are still
+worth keeping: those were always CPU savings, not bus savings, and CPU is still
+real. The 6.36% → 0.73% improvement measured there stands.
 
 ---
 
@@ -528,9 +541,13 @@ without being asked. What was learned and is worth keeping:
   shell access. "The right person got in" is not evidence the wrong person is
   kept out. Do before calling the prototype finished.
 - **D-2:** clock wrong ~34 s after boot (handled, documented).
-- Voice/camera deliberately deferred; seams documented in `docs/ARCHITECTURE.md`.
-  Pi 5 has no analog audio out — a USB/I2S DAC will be needed, and an I2S HAT
-  may contend with the SPI panel for GPIO.
+- **Audio hardware is IN and working** (ReSpeaker 2-Mic Pi HAT, 2026-08-06).
+  The old note here predicted an I2S HAT might contend with the SPI panel for
+  GPIO; it does not, and the question is moot anyway now the SPI panel is gone.
+  I2S uses GPIO 18-21, which never overlapped SPI0 (7-11) or the panel's
+  control pins (17/24/25). **Speaker output is UNVERIFIED — nothing has been
+  plugged into the HAT yet.** Both mics measured live. Nothing in this project
+  uses the audio yet; voice is still not built.
 - Only one SSH key exists (`alanmyin-laptop`). Losing it means physical
   recovery. Adding a second key is cheap insurance.
 
