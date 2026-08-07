@@ -88,10 +88,10 @@ Rebuild: `python3 tools/render_frames.py --out assets/anim` (~5 min).
 | Host | Raspberry Pi 5, Debian 13 trixie, aarch64, 7.9 GB RAM |
 | User | `alanmyin` — **everything runs as this user, never root** |
 | Panel | Waveshare HDMI LCD, **800×480** RGB565, `/dev/fb0` via vc4 KMS fbdev. Mode is FORCED in `cmdline.txt` (`video=HDMI-A-1:800x480@60D`) because the panel returns **zero bytes of EDID** |
-| Audio | ReSpeaker 2-Mic Pi HAT (WM8960, I2C 0x1a + I2S). ALSA card `wm8960soundcard`. Mics verified live; **speaker output never confirmed — nothing was plugged in** |
+| Audio | ReSpeaker 2-Mic Pi HAT (WM8960, I2C 0x1a + I2S). ALSA card `wm8960soundcard`, **excluded from WirePlumber** so nothing fights the mixer. Mixer set by `hermes-audio.service`, verified across a reboot. Mics verified live; **speaker output never confirmed — nothing was plugged in** |
 | Hermes | v0.20.0 at `~/.hermes/`, `hermes` on PATH |
 | Model | `openai-codex/gpt-5.6-terra`; auxiliary → `gpt-5.6-luna` |
-| Services | `hermes-gateway`, `hermes-display`, `hermes-camera`, `hermes-usage` (user) · `hermes-fbcon-detach` (system) |
+| Services | `hermes-gateway`, `hermes-display`, `hermes-camera`, `hermes-usage`, `hermes-audio` (user) · `hermes-fbcon-detach` (system) |
 | Runtime state | `/run/user/1000/hermes-display/{state.json,request.json,images/}` |
 | Network | LAN only, `192.168.2.56`. Two network-facing sockets: **22** (ssh) and **8081** (camera live view, token-gated). |
 

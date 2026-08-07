@@ -1,0 +1,17 @@
+[Unit]
+Description=Hermes Pi Audio - put the ReSpeaker HAT into a known mixer state
+Documentation=file:///home/alanmyin/projects/hermes-pi/docs/RUNBOOK.md
+# No ordering against sound.target: the script waits for the card itself, which
+# is more reliable than guessing when simple-card finishes binding. The
+# boot-time alsa-restore loses exactly that race and fails silently.
+After=default.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/alanmyin/projects/hermes-pi/scripts/audio-setup.sh
+# The HAT not being fitted is not a failure worth flagging red.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=default.target

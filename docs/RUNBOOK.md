@@ -364,6 +364,73 @@ verified live (peak 328/250 against silence).
 `i2cdetect -y 1` shows 0x1a but `i2cget` fails — that is correct and not a
 fault. The WM8960's registers are **write-only**.
 
+### The mixer resets itself after a reboot
+
+Symptom: routing switches survive, both volumes are back at driver defaults
+(`Headphone 0%`, `Speaker 82%`) — **no sound at all from the 3.5 mm jack**.
+Two separate things cause it, and both were observed:
+
+1. **`alsa-restore` loses a race with card registration.** The saved state is
+   fine — `sudo alsactl restore wm8960soundcard` applies it perfectly by hand
+   — but at boot the unit ran at 4.70 s while the WM8960 codec only probed at
+   3.42 s and the ALSA card binds later still. No card, nothing restored, no
+   error message.
+2. **WirePlumber then claims the card and applies its own volume.** It starts
+   at 7.83 s and enumerates ALSA devices *asynchronously afterwards*, so it
+   silently overwrote `hermes-audio.service` even though that ran later
+   (8.33 s).
+
+Both are fixed by `scripts/install-audio.sh`:
+
+- `hermes-audio.service` applies `scripts/audio-setup.sh` — the settings as
+  versioned code rather than machine state under `/var/lib/alsa`.
+- `51-hermes-respeaker.conf` **excludes the card from WirePlumber entirely**.
+  Ordering the unit later would just be racing a race. Excluding it is also
+  the right architecture: this HAT exists for the voice pipeline, which wants
+  direct predictable ALSA access to the mics rather than a session manager
+  that can resample them or hand them to another client. HDMI audio is still
+  managed by WirePlumber.
+
+```bash
+amixer -c wm8960soundcard sget Headphone      # expect ~87%, NOT 0%
+wpctl status | grep 'Built-in Audio Stereo'   # expect NOTHING
+```
+
+Verified unattended across a reboot: 110/110 with the routing on.
+
+### The mixer resets itself after boot
+
+Two separate things fight over this card, and both were observed losing:
+
+1. **`alsa-restore` loses a race with card registration.** The saved state is
+   correct — `sudo alsactl restore wm8960soundcard` applies it perfectly by
+   hand — but at boot the unit ran at 4.70 s while the WM8960 codec only probed
+   at 3.42 s and the ALSA card binds later still. No card, nothing restored,
+   no error.
+2. **WirePlumber then claims the card and applies its own volume.** It starts
+   at 7.83 s and enumerates ALSA devices *asynchronously afterwards*, so it
+   overwrote `hermes-audio.service` (8.33 s) even though that ran later.
+
+Symptom of either: routing switches survive, both volumes are back at driver
+defaults (`Headphone 0%`, `Speaker 82%`) — **no sound at all from the 3.5 mm
+jack**.
+
+Fixed by `scripts/install-audio.sh`, which does two things:
+
+- `hermes-audio.service` applies the mixer from `scripts/audio-setup.sh` —
+  settings as versioned code, not machine state under `/var/lib/alsa`.
+- `51-hermes-respeaker.conf` **excludes the card from WirePlumber entirely**.
+  Ordering the unit later would just be racing a race. Excluding it is also
+  the right architecture: this HAT exists for the voice pipeline, which wants
+  direct predictable ALSA access to the mics rather than a session manager
+  that can resample them or hand them to another client. HDMI audio is still
+  managed by WirePlumber.
+
+```bash
+amixer -c wm8960soundcard sget Headphone      # expect ~87%, NOT 0%
+wpctl status | grep 'Built-in Audio Stereo'   # expect NOTHING
+```
+
 Nothing in this project uses the audio yet.
 
 ---
