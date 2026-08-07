@@ -181,7 +181,7 @@ class Service:
         # Nothing on this Pi acts on them and nothing here can reach Hermes --
         # see camera/gestures.py and docs/GESTURES.md for why that line is
         # where it is.
-        self.gate = gestures.GestureGate()
+        self.gate = gestures.GestureGate(vocabulary=hands.vocabulary())
         self.gestures_enabled = os.environ.get(
             "HERMES_CAMERA_GESTURES", "on").lower() not in ("off", "0", "no")
         self._last_gesture_at = 0.0
@@ -502,7 +502,9 @@ class Service:
             # a subscriber does off the back of it, and journald here is
             # persistent -- see docs/GESTURES.md.
             print(f"[camera] gesture seq={ev.seq} {ev.hand} {ev.gesture} "
-                  f"[{ev.fingers_up}] score={ev.score:.2f}", flush=True)
+                  f"[{ev.fingers_up}] score={ev.score:.2f} "
+                  f"latency={ev.latency_ms:.0f}ms dwell={ev.dwell_ms:.0f}ms",
+                  flush=True)
 
     def _push_ring(self, frame, wall: float, mono: float, now: float) -> None:
         # Preserve aspect here too. RING_SIZE is written landscape, but a

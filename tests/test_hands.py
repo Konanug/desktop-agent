@@ -90,14 +90,79 @@ def test_finger_pattern_matches_the_name():
                 f"{name}: fingers {got} != {EXPECTED_FINGERS[expect]}")
 
 
-def test_unknown_shapes_get_a_count_not_a_guess():
-    """An unrecognised shape must report how many fingers are up, never the
-    nearest named gesture. A confident wrong label is the failure mode that
-    matters once something acts on these."""
-    assert classify((0, 1, 0, 1, 0)) == "2 UP"
-    assert classify((1, 1, 1, 0, 0)) == "3 UP"
+def test_unknown_shapes_are_not_gestures_at_all():
+    """THE VOCABULARY IS CLOSED, and this is the regression that matters.
+
+    classify() used to fall back to f"{n} UP" for anything unrecognised, so
+    EVERY hand pose was a named gesture. A hand is always in some shape, so a
+    hand in view permanently asserted a command and moving it fired a run of
+    them -- opening a fist passes through four nameable patterns on the way.
+
+    None is the correct answer for "not one of the shapes we act on". It is
+    not an error and not a fallback, and the debouncer treats it exactly like
+    no hand: nothing to fire, and clear the latch.
+    """
+    assert classify((0, 1, 0, 1, 0)) is None
+    assert classify((1, 1, 1, 0, 0)) is None
+    # Removed from the vocabulary ON PURPOSE: these are what a hand passes
+    # through while opening, and what a relaxed hand does.
+    assert classify((0, 1, 1, 1, 0)) is None, "THREE is a transitional pose"
+    assert classify((0, 1, 1, 1, 1)) is None, "FOUR is a transitional pose"
+    assert classify((0, 0, 0, 0, 1)) is None, "PINKY is a relaxed hand"
+    # ... while the deliberate shapes still resolve.
     assert classify((0, 0, 0, 0, 0)) == "FIST"
     assert classify((1, 1, 1, 1, 1)) == "OPEN"
+    assert classify((0, 1, 1, 0, 0)) == "PEACE"
+
+
+def test_a_human_label_still_exists_for_unrecognised_shapes():
+    """Silence downstream, but not silence on the overlay. Someone watching
+    the stream still needs to see what their hand is doing, or 'why is nothing
+    firing' has no answer."""
+    lm = FIXTURES[("victory_rot0", "PEACE")]
+    h = Hand(lm, "Right", 0.99)
+    assert h.gesture == "PEACE" and h.label == "PEACE"
+    h.gesture = None                       # simulate an unrecognised shape
+    assert h.label.endswith("UP"), "no caption for an unrecognised hand"
+
+
+def test_landmark_distances_are_rotation_invariant():
+    """MEASURED, and the reason the aspect argument exists.
+
+    Landmarks are normalised by width and height SEPARATELY, so on a portrait
+    frame the same physical gap reads differently depending on which way it
+    points. Uncorrected, thumb-tip-to-index-tip over hand scale swings
+    0.549..1.447 across rotations of the same pose -- a 2.6x spread that no
+    fixed threshold survives. Corrected, it holds within 1%.
+    """
+    from camera.hands import pinch_ratio
+    AR = 960 / 540                                   # the real stream frame
+    for pose in ("thumb_up", "victory", "pointing_up"):
+        vals = [pinch_ratio(lm, AR) for (n, _), lm in FIXTURES.items()
+                if n.startswith(pose)]
+        assert len(vals) == 4, f"expected 4 rotations of {pose}"
+        spread = max(vals) / min(vals)
+        assert spread < 1.02, f"{pose} varies {spread:.2f}x with rotation"
+        raw = [pinch_ratio(lm, 1.0) for (n, _), lm in FIXTURES.items()
+               if n.startswith(pose)]
+        if pose == "thumb_up":       # the worst case, kept as the proof
+            assert max(raw) / min(raw) > 2.0, \
+                "uncorrected distances no longer show the bug this guards"
+
+
+def test_a_curled_hand_is_not_a_pinch():
+    """A fist also brings thumb and index tips together. What separates a
+    pinch is that the index tip is still out in front of the hand rather than
+    folded back against the palm -- measured 0.87 curled vs 1.84+ extended."""
+    from camera.hands import index_reach, PINCH_MIN_REACH
+    AR = 960 / 540
+    curled = index_reach(FIXTURES[("thumb_up_rot0", "THUMB")], AR)
+    extended = index_reach(FIXTURES[("victory_rot0", "PEACE")], AR)
+    assert curled < PINCH_MIN_REACH <= extended, \
+        f"reach threshold {PINCH_MIN_REACH} does not separate {curled:.2f} "
+    assert classify(fingers_extended(FIXTURES[("thumb_up_rot0", "THUMB")]),
+                    FIXTURES[("thumb_up_rot0", "THUMB")], AR) == "THUMB", \
+        "a curled hand was misread as a pinch"
 
 
 def test_hand_reports_a_bounding_box_that_contains_every_landmark():

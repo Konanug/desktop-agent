@@ -46,10 +46,12 @@ class _Hand:
     reads these six attributes."""
 
     def __init__(self, gesture, handedness="Right", score=0.9, count=None):
+        # gesture=None is a REAL case, not a missing hand: it is what
+        # hands.classify() returns for a shape outside the closed vocabulary.
         self.gesture = gesture
         self.handedness = handedness
         self.score = score
-        self.count = count if count is not None else len(gesture)
+        self.count = count if count is not None else len(gesture or "")
         self.bbox = (0.1, 0.2, 0.3, 0.4)
 
 
@@ -124,6 +126,68 @@ def test_no_hand_is_never_an_event():
     """Absence clears the latch. It is not itself something to act on."""
     g = gestures.GestureGate()
     assert _feed(g, None, 20) == [], "empty frames produced events"
+
+
+def test_a_hand_making_no_vocabulary_gesture_fires_nothing():
+    """THE COMPLAINT THAT PROMPTED THE CLOSED VOCABULARY.
+
+    classify() used to name every finger pattern, so a hand in view was
+    permanently asserting a command. hands.py now returns None for anything
+    outside the vocabulary, and the gate must treat that exactly like an empty
+    frame -- a hand resting in shot is not an instruction.
+    """
+    g = gestures.GestureGate()
+    # _Hand(None) stands for a real hand whose shape is not in the vocabulary.
+    assert _feed(g, None, 20) == []
+    out = []
+    for i in range(20):
+        out += g.observe(_Result([_Hand(None, "Right")]),
+                         now=i * 0.1, mono=i * 0.1)
+    assert out == [], "a hand in an unrecognised shape fired a command"
+
+
+def test_moving_between_gestures_does_not_fire_the_poses_in_between():
+    """Opening a fist passes through several finger patterns. With an open
+    vocabulary each was a nameable gesture and each fired; with a closed one
+    they fall in the gap and only the endpoints commit."""
+    g = gestures.GestureGate(min_gap=0.0)
+    out, t = [], 0.0
+    for value in ("FIST", None, None, None, "OPEN"):      # None = transitional
+        for _ in range(5):
+            out += g.observe(_Result([_Hand(value, "Right")] if value
+                                     else [_Hand(None, "Right")]),
+                             now=t, mono=t)
+            t += 0.1
+    assert [e.gesture for e in out] == ["FIST", "OPEN"], \
+        f"transitional poses fired: {[e.gesture for e in out]}"
+
+
+def test_the_vocabulary_can_be_narrowed():
+    """An owner who only wants PINCH to do anything should not have to bind
+    everything else to nothing on every client -- and narrowing here also
+    stops the unwanted ones consuming the rate limit."""
+    g = gestures.GestureGate(vocabulary={"PINCH"})
+    assert _feed(g, "PEACE", 6, t0=0.0) == [], "fired outside the vocabulary"
+    _feed(g, None, 6, t0=1.0)
+    assert len(_feed(g, "PINCH", 6, t0=2.0)) == 1
+    assert g.suppressed == 0, "a narrowed gesture must not count as rate-limited"
+
+
+def test_latency_and_dwell_are_reported():
+    """The lag has two independent halves and they are fixed by different
+    knobs -- HANDS_HZ for inference, WINDOW/MAJORITY for the hold. Reporting
+    one number would hide which one to turn."""
+    g = gestures.GestureGate()
+    out = []
+    for i in range(6):                      # frames 0.1s apart
+        out += g.observe(_Result([_Hand("FIST", "Right")], at=i * 0.1),
+                         now=i * 0.1 + 0.05, mono=i * 0.1)
+    assert len(out) == 1
+    ev = out[0]
+    assert 40 < ev.latency_ms < 60, f"latency_ms={ev.latency_ms}"
+    assert ev.dwell_ms >= 190, f"dwell_ms={ev.dwell_ms} (expected ~200)"
+    d = ev.as_dict()
+    assert "latency_ms" in d and "dwell_ms" in d
 
 
 def test_hands_are_independent():

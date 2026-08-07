@@ -55,7 +55,7 @@ Bindings match `"<HAND> <GESTURE>"` first, then `"<GESTURE>"` alone.
 | | |
 |---|---|
 | Hands | `LEFT` `RIGHT` `?` |
-| Gestures | `FIST` `OPEN` `POINT` `PEACE` `THUMB` `PINKY` `CALL` `THREE` `FOUR` `ROCK`, or `"N UP"` for an unnamed finger pattern (e.g. `"2 UP"`) |
+| Gestures | `FIST` `OPEN` `POINT` `PEACE` `THUMB` `CALL` `ROCK` `PINCH` — and that list is **closed**. Any other hand shape fires nothing, so moving your hand around does not trigger a run of commands. |
 | Media keys | `play_pause` `next_track` `prev_track` `stop_media` `volume_up` `volume_down` `volume_mute` |
 | Modifiers | `ctrl` `shift` `alt` `win` |
 | Navigation | `tab` `esc` `space` `enter` `backspace` `delete` `insert` `home` `end` `pageup` `pagedown` `left` `right` `up` `down` |

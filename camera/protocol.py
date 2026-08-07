@@ -125,7 +125,14 @@ STREAM_FPS = 15.0
 # ~60 ms at EVERY input size, because mediapipe rescales to its own fixed input
 # internally. So 10 Hz is already two thirds of a core; 15 would be all of one.
 # It runs on its own thread, so this rate does not pace the stream.
-HANDS_HZ = 10.0
+#
+# TUNABLE, because it is one of the two knobs that set gesture LAG and they
+# pull in opposite directions. Detection rate sets how quickly the debounce can
+# accumulate its 3-of-5: at 10 Hz a gesture needs ~200 ms of holding before it
+# can commit, at 15 Hz ~133 ms. Raising it costs CPU roughly linearly; the
+# other knob (gestures.WINDOW / MAJORITY) costs false triggers instead.
+# Measured cost is in docs/GESTURES.md -- change this and re-measure.
+HANDS_HZ = float(_os.environ.get("HERMES_CAMERA_HANDS_HZ", "10"))
 HANDS_MAX = 2
 
 # Grace period after the last viewer disconnects. A browser reloading the page

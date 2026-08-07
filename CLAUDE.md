@@ -485,9 +485,21 @@ non-build below still stands. Load-bearing properties:
   reaches the fixed action list in the laptop's own config.
 - **A subscriber is a viewer** — wakes the sensor, keeps tracking alive, lights
   `CAM`. No receiving gestures from a room without being counted as watching it.
+- **The vocabulary is CLOSED** — FIST OPEN POINT PEACE THUMB CALL ROCK PINCH.
+  `classify()` used to name every finger pattern, so a hand in view permanently
+  asserted a command and moving it fired a run of them. Anything else is now
+  `None`, which the debouncer treats exactly like no hand. THREE/FOUR/PINKY
+  were dropped deliberately: they are what a hand passes through while opening.
+- **Landmark distances MUST be aspect-corrected.** x and y are normalised by
+  width and height separately and this frame is portrait, so raw thumb-to-index
+  over hand scale swings **2.6x** across rotations of the same pose (0.549 →
+  1.447) and is stable to 1% corrected. PINCH turns on that ratio.
 - **Debounce 3-of-5, latch until cleared, sliding limits** (0.8 s per hand,
   30/min global). Per-hand vs global is deliberate: a global min gap would drop
   half of every two-handed gesture.
+- **Lag is reported, not argued about**: every event carries `latency_ms`
+  (inference+queue) and `dwell_ms` (debounce hold). Measured detection cost —
+  10 Hz **70.8%** of a core / 300 ms dwell, 15 Hz **96.2%** / 200 ms.
 - **A rate-limited gesture is DROPPED, not deferred**, and no replay on
   reconnect. `age_s` is monotonic-derived, never a cross-machine timestamp.
 

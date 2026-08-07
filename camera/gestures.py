@@ -92,10 +92,11 @@ class Event:
     """One gesture edge. Immutable once published."""
 
     __slots__ = ("seq", "at", "mono", "hand", "gesture", "fingers_up",
-                 "bbox", "score")
+                 "bbox", "score", "latency_ms", "dwell_ms")
 
     def __init__(self, seq: int, at: float, mono: float, hand: str,
-                 gesture: str, fingers_up: int, bbox, score: float):
+                 gesture: str, fingers_up: int, bbox, score: float,
+                 latency_ms: float = 0.0, dwell_ms: float = 0.0):
         self.seq = seq
         self.at = at
         self.mono = mono
@@ -104,6 +105,14 @@ class Event:
         self.fingers_up = fingers_up
         self.bbox = bbox
         self.score = score
+        # WHERE THE LAG ACTUALLY IS, split so it can be argued about with
+        # numbers. `latency_ms` is capture -> decision on the deciding frame:
+        # inference plus queueing. `dwell_ms` is how long the gesture had to be
+        # held before the debounce would commit it. Perceived lag is roughly
+        # their sum, and they are reduced by completely different means --
+        # HANDS_HZ for one, WINDOW/MAJORITY for the other.
+        self.latency_ms = latency_ms
+        self.dwell_ms = dwell_ms
 
     def as_dict(self, now_mono: float | None = None) -> dict:
         """`age_s` is stamped HERE, at serialisation, not at publication.
@@ -122,6 +131,8 @@ class Event:
             "gesture": self.gesture,
             "fingers_up": self.fingers_up,
             "score": round(self.score, 3),
+            "latency_ms": round(self.latency_ms, 1),
+            "dwell_ms": round(self.dwell_ms, 1),
             "bbox": [round(v, 4) for v in self.bbox],
             # Where in frame, for a client that wants to point at something.
             # Normalised 0..1 in the frame as DELIVERED, which is rotated --
@@ -150,11 +161,12 @@ class EventLog:
             return self._seq
 
     def publish(self, at: float, mono: float, hand: str, gesture: str,
-                fingers_up: int, bbox, score: float) -> Event:
+                fingers_up: int, bbox, score: float,
+                latency_ms: float = 0.0, dwell_ms: float = 0.0) -> Event:
         with self._cond:
             self._seq += 1
             ev = Event(self._seq, at, mono, hand, gesture, fingers_up,
-                       bbox, score)
+                       bbox, score, latency_ms, dwell_ms)
             self._events.append(ev)
             self._cond.notify_all()
             return ev
@@ -193,13 +205,17 @@ class EventLog:
 class _Slot:
     """One hand's debounce state. LEFT and RIGHT are fully independent."""
 
-    __slots__ = ("name", "_obs", "committed", "hand", "last_fire")
+    __slots__ = ("name", "_obs", "committed", "hand", "last_fire", "since")
 
     def __init__(self, name: str):
         self.name = name
         self._obs: collections.deque = collections.deque(maxlen=WINDOW)
         self.committed: str | None = None
         self.hand = None            # the Hand behind the committed gesture
+        # Wall time this slot first saw the value it is currently accumulating.
+        # Reported as dwell_ms so the debounce's share of the lag is a measured
+        # number rather than an argument about it.
+        self.since: float | None = None
         # None, not 0.0. time.monotonic()'s origin is explicitly undefined, so
         # a sentinel of zero means "never fired" on a machine whose monotonic
         # clock starts large and "fired just now" on one where it starts near
@@ -211,16 +227,20 @@ class _Slot:
         self.committed = None
         self.hand = None
         self.last_fire = None
+        self.since = None
 
-    def observe(self, hand) -> tuple[bool, str | None]:
+    def observe(self, hand, at: float) -> tuple[bool, str | None]:
         """Feed one observation. Returns (changed, newly committed value).
 
-        `hand` is a hands.Hand or None for "no hand in this slot". Absence is
-        an observation like any other -- that is what clears the latch when you
-        drop your hand, and it must debounce too, or a single frame where the
-        tracker loses the hand would re-arm a gesture you are still holding.
+        `hand` is a hands.Hand or None, where None covers BOTH "no hand in this
+        slot" and "a hand that is not making a vocabulary gesture". Those are
+        the same thing as far as acting is concerned, and both must debounce:
+        a single frame where the tracker loses the hand, or misreads a held
+        shape, would otherwise re-arm a gesture you never stopped making.
         """
         gesture = hand.gesture if hand is not None else None
+        if not self._obs or self._obs[-1] != gesture:
+            self.since = at
         self._obs.append(gesture)
         value, n = collections.Counter(self._obs).most_common(1)[0]
         if n < MAJORITY or value == self.committed:
@@ -236,10 +256,14 @@ class GestureGate:
     """Debounced gesture edges from a stream of hand-tracking results."""
 
     def __init__(self, log: EventLog | None = None, min_gap: float = MIN_GAP,
-                 max_per_min: int = MAX_PER_MIN):
+                 max_per_min: int = MAX_PER_MIN, vocabulary=None):
         self.log = log if log is not None else EventLog()
         self.min_gap = min_gap
         self.max_per_min = max_per_min
+        # None means "whatever hands.py recognises". A narrower set here stops
+        # unwanted gestures consuming the rate limit, which binding them to
+        # nothing on the client would not.
+        self.vocabulary = vocabulary
         self._slots = {n: _Slot(n) for n in SLOTS}
         self._recent: collections.deque = collections.deque()
         self.fired = 0
@@ -298,10 +322,15 @@ class GestureGate:
 
         out = []
         for name, slot in self._slots.items():
-            changed, value = slot.observe(seen.get(name))
+            changed, value = slot.observe(seen.get(name), result.at)
             if not changed or value is None:
                 # None is a commit too -- it is what clears the latch when the
-                # hand leaves -- but "no hand" is not an event.
+                # hand leaves OR stops making a vocabulary gesture -- but it is
+                # never itself an event.
+                continue
+            if self.vocabulary is not None and value not in self.vocabulary:
+                # Narrowed away by the owner. Still latched, so it will not be
+                # reconsidered until the hand does something else.
                 continue
             if not self._allowed(slot, mono):
                 # Latched above, so this is DROPPED and will not be re-emitted
@@ -313,7 +342,14 @@ class GestureGate:
                 at=result.at, mono=mono, hand=name, gesture=value,
                 fingers_up=hand.count if hand else 0,
                 bbox=hand.bbox if hand else (0.0, 0.0, 0.0, 0.0),
-                score=hand.score if hand else 0.0)
+                score=hand.score if hand else 0.0,
+                latency_ms=max(0.0, (now - result.at) * 1000.0),
+                # `is None`, NOT `or`. slot.since is a timestamp, and a
+                # timestamp of 0.0 is falsy -- `slot.since or result.at` reads
+                # a legitimate zero as "unset" and reports zero dwell. Same
+                # trap as CLAUDE.md 28, one field over.
+                dwell_ms=max(0.0, (result.at - (result.at if slot.since is None
+                                                else slot.since)) * 1000.0))
             self._recent.append(mono)
             slot.last_fire = mono
             self.fired += 1

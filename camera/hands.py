@@ -79,9 +79,68 @@ def model_path() -> Path:
     return Path(os.environ.get("HERMES_CAMERA_HAND_MODEL", str(DEFAULT_MODEL)))
 
 
+# Landmark indices used by the shape tests below.
+_MIDDLE_MCP = 9         # wrist->here is the hand's own scale reference
+_THUMB_TIP, _INDEX_TIP = 4, 8
+
+
 # -- gesture reading ------------------------------------------------------
-def _dist(a, b) -> float:
-    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+def _dist(a, b, ar: float = 1.0) -> float:
+    """Distance between two landmarks, in units proportional to PIXELS.
+
+    `ar` is the frame's height/width. It is not optional decoration.
+
+    MediaPipe normalises x by frame WIDTH and y by frame HEIGHT, separately.
+    On this camera the frame is portrait (540x960), so a horizontal 0.1 is 54
+    px and a vertical 0.1 is 96 px -- the same physical gap reads differently
+    depending on which way it points, and therefore on which way the hand is
+    turned.
+
+    MEASURED on the twelve real fixtures in tests/test_hands.py, thumb-tip to
+    index-tip over hand scale:
+
+        pose        raw (ar=1)      aspect-corrected
+        thumb_up    0.549 .. 1.447      0.924 .. 0.932
+        victory     1.030 .. 1.247      1.089 .. 1.092
+        pointing    0.993 .. 1.098      1.067 .. 1.071
+
+    Raw swings by 2.6x across rotations of the SAME pose. Corrected, it is
+    stable to under 1%. Any threshold on a raw distance is really a threshold
+    on how the hand happens to be oriented.
+
+    fingers_extended() below survives without this because it compares two
+    distances measured in nearly the same DIRECTION, so the distortion mostly
+    cancels. Anything comparing distances in different directions -- a pinch,
+    which is thumb-to-index against wrist-to-knuckle -- does not get that.
+    """
+    dx = a[0] - b[0]
+    dy = (a[1] - b[1]) * ar
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def hand_scale(lm, ar: float = 1.0) -> float:
+    """Wrist to middle knuckle: the hand's own ruler.
+
+    Every shape test is a RATIO against this, so it works at any distance from
+    the camera without ever needing to know the distance.
+    """
+    return max(1e-6, _dist(lm[WRIST], lm[_MIDDLE_MCP], ar))
+
+
+def pinch_ratio(lm, ar: float = 1.0) -> float:
+    """Thumb tip to index tip, over hand scale. Small means pinched."""
+    return _dist(lm[_THUMB_TIP], lm[_INDEX_TIP], ar) / hand_scale(lm, ar)
+
+
+def index_reach(lm, ar: float = 1.0) -> float:
+    """Index tip to wrist, over hand scale. Distinguishes a PINCH from a FIST.
+
+    Both bring the thumb and index tips close together. What differs is where
+    the index tip IS: out in front of the hand when pinching, folded back
+    against the palm when fisted. Measured on the fixtures, a curled hand
+    (thumb_up) reads 0.87 while extended fingers read 1.84-1.96.
+    """
+    return _dist(lm[_INDEX_TIP], lm[WRIST], ar) / hand_scale(lm, ar)
 
 
 def fingers_extended(lm) -> tuple[bool, ...]:
@@ -120,51 +179,118 @@ def fingers_extended(lm) -> tuple[bool, ...]:
     return tuple(out)
 
 
-# Deliberately small. Every name here is a shape that is unambiguous to read
-# off five booleans; anything subtler needs a classifier, not a lookup table,
-# and pretending otherwise would produce confident wrong labels.
+# THE VOCABULARY IS CLOSED, AND THAT IS THE POINT.
+#
+# This used to fall back to f"{n} UP" for any unrecognised finger pattern, so
+# EVERY hand pose resolved to some gesture. A hand is always in some shape, so
+# a hand in view was permanently asserting a command, and simply moving it
+# through the air fired a run of them: opening a fist passes through (0,1,0,0,0),
+# (0,1,1,0,0), (0,1,1,1,0), (0,1,1,1,1) on the way to OPEN, and each one was a
+# nameable "gesture" that something downstream would act on.
+#
+# Only shapes in here produce an event. Everything else is None, which means
+# exactly what "no hand" means to the debouncer: nothing to act on, and clear
+# the latch. Transitional poses on the way between two real gestures fall in
+# the gap and are silent.
+#
+# Kept deliberately small. THREE and FOUR were removed precisely because they
+# are what a hand passes through while opening; PINKY because it is what a
+# relaxed hand does. Every name here is a shape you have to mean.
 _GESTURES = {
     (0, 0, 0, 0, 0): "FIST",
     (1, 1, 1, 1, 1): "OPEN",
     (0, 1, 0, 0, 0): "POINT",
     (0, 1, 1, 0, 0): "PEACE",
     (1, 0, 0, 0, 0): "THUMB",
-    (0, 0, 0, 0, 1): "PINKY",
     (1, 0, 0, 0, 1): "CALL",
-    (0, 1, 1, 1, 0): "THREE",
-    (0, 1, 1, 1, 1): "FOUR",
     (1, 1, 0, 0, 1): "ROCK",
 }
 
+# Shapes that cannot be read off five booleans and need the landmarks. PINCH is
+# checked BEFORE the table, because a pinching hand's finger pattern is
+# ambiguous -- the index is curled enough that the extension test can go either
+# way -- and the thumb-to-index distance is not.
+#
+# Thresholds are PROVISIONAL. tools/gesture_calibrate.py prints these two
+# numbers live so they can be set from a real hand at a real distance rather
+# than from my arithmetic. Measured non-pinch baseline on the twelve fixtures:
+# pinch ratio 0.92-1.09, index reach 0.87 (curled) vs 1.84-1.96 (extended).
+PINCH_MAX = float(os.environ.get("HERMES_PINCH_MAX", "0.45"))
+PINCH_MIN_REACH = float(os.environ.get("HERMES_PINCH_MIN_REACH", "1.10"))
 
-def classify(fingers) -> str:
-    """A name, or an honest count. Never a guess dressed as a name."""
-    key = tuple(int(b) for b in fingers)
-    return _GESTURES.get(key) or f"{sum(key)} UP"
+
+def classify(fingers, lm=None, ar: float = 1.0) -> str | None:
+    """A name from the CLOSED vocabulary, or None. Never a guess.
+
+    None is a real answer meaning "this hand is not making one of the gestures
+    we act on" -- it is not an error and not a fallback.
+    """
+    if lm is not None:
+        # A fist also brings thumb and index tips together; what separates a
+        # pinch is that the index tip is still out in front of the hand rather
+        # than folded back against the palm.
+        if (pinch_ratio(lm, ar) < PINCH_MAX
+                and index_reach(lm, ar) >= PINCH_MIN_REACH):
+            return "PINCH"
+    return _GESTURES.get(tuple(int(b) for b in fingers))
+
+
+def vocabulary() -> set[str]:
+    """Which gestures may fire, narrowed by HERMES_CAMERA_GESTURE_SET.
+
+    An owner who only wants PINCH and PEACE to do anything should not have to
+    bind the rest to nothing on every client -- and narrowing here also stops
+    the unwanted ones consuming the rate limit.
+    """
+    raw = os.environ.get("HERMES_CAMERA_GESTURE_SET", "").strip()
+    if not raw:
+        return set(_GESTURES.values()) | {"PINCH"}
+    return {w.strip().upper() for w in raw.split(",") if w.strip()}
 
 
 class Hand:
     __slots__ = ("landmarks", "handedness", "score", "fingers", "count",
-                 "gesture", "bbox")
+                 "gesture", "bbox", "aspect", "pinch", "reach")
 
-    def __init__(self, landmarks, handedness: str, score: float):
+    def __init__(self, landmarks, handedness: str, score: float,
+                 aspect: float = 1.0):
         self.landmarks = landmarks          # 21 x (x, y) normalised 0..1
         self.handedness = handedness
         self.score = score
+        self.aspect = aspect                # frame height/width -- see _dist
         self.fingers = fingers_extended(landmarks)
         self.count = sum(self.fingers)
-        self.gesture = classify(self.fingers)
+        self.pinch = pinch_ratio(landmarks, aspect)
+        self.reach = index_reach(landmarks, aspect)
+        # May be None: a hand not making a vocabulary gesture is a normal,
+        # frequent, correct outcome.
+        self.gesture = classify(self.fingers, landmarks, aspect)
         xs = [p[0] for p in landmarks]
         ys = [p[1] for p in landmarks]
         self.bbox = (min(xs), min(ys), max(xs), max(ys))
+
+    @property
+    def label(self) -> str:
+        """For HUMANS to read on the overlay -- never for deciding anything.
+
+        An unrecognised shape still deserves a useful caption, so this falls
+        back to a finger count. classify() deliberately does NOT, because that
+        fallback is what made every pose look like a command.
+        """
+        return self.gesture or f"{self.count} UP"
 
     def as_dict(self) -> dict:
         return {
             "handedness": self.handedness,
             "score": round(self.score, 3),
-            "gesture": self.gesture,
+            "gesture": self.gesture,           # null when not in the vocabulary
+            "label": self.label,
             "fingers_up": self.count,
             "fingers": {n: bool(f) for n, f in zip(FINGER_NAMES, self.fingers)},
+            # The two ratios the shape tests turn on, published so
+            # tools/gesture_calibrate.py can set thresholds from a real hand.
+            "pinch_ratio": round(self.pinch, 3),
+            "index_reach": round(self.reach, 3),
             "bbox": [round(v, 4) for v in self.bbox],
             "landmarks": [[round(x, 4), round(y, 4)] for x, y in self.landmarks],
         }
@@ -304,6 +430,13 @@ class HandTracker:
                 continue
             ms = (time.perf_counter() - t0) * 1000
 
+            # Frame aspect, so landmark distances can be made isotropic. The
+            # frame is portrait here and normalised coordinates are not.
+            try:
+                aspect = frame.shape[0] / frame.shape[1]
+            except (AttributeError, IndexError, ZeroDivisionError):
+                aspect = 1.0
+
             hands = []
             for i, marks in enumerate(res.hand_landmarks):
                 cat = res.handedness[i][0] if i < len(res.handedness) else None
@@ -313,7 +446,8 @@ class HandTracker:
                     # passed through as given rather than reinterpreted, since
                     # guessing which way the camera is facing would be worse.
                     getattr(cat, "category_name", "?"),
-                    getattr(cat, "score", 0.0)))
+                    getattr(cat, "score", 0.0),
+                    aspect))
             self._result = Result(hands, wall, ms)
             self.frames += 1
             self.mean_ms += (ms - self.mean_ms) / min(self.frames, 30)
@@ -361,7 +495,11 @@ def draw(img, result: Result | None, now: float | None = None) -> None:
             d.ellipse((x - r, y - r, x + r, y + r),
                       fill=_TIP if i in TIPS else _WHITE)
 
-        label = f"{hand.handedness.upper()}  {hand.gesture}  [{hand.count}]"
+        # .label, not .gesture: an unrecognised shape still gets a caption for
+        # the person watching. Only .gesture reaches the debouncer.
+        mark = "" if hand.gesture else "  ~"
+        label = (f"{hand.handedness.upper()}  {hand.label}  "
+                 f"[{hand.count}]{mark}")
         ly = max(0, box[1] - 15)
         d.rectangle((box[0], ly, box[0] + 7.2 * len(label) + 8, ly + 14),
                     fill=(0, 0, 0))

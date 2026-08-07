@@ -47,6 +47,7 @@ Three mechanisms, all pinned by `tests/test_gestures.py`:
 
 | | |
 |---|---|
+| **Closed vocabulary** | Only shapes in a fixed set produce an event. Everything else is `None` — the same thing, to the debouncer, as no hand at all. |
 | **Debounce** | A value commits only when it holds **3 of the last 5** observations (~300 ms at 10 Hz). Not a run of consecutive agreements — one mis-detected frame mid-hold would reset that forever, and at any flicker rate near the threshold it would never commit at all. |
 | **Latch** | Once committed, a gesture cannot fire again until the slot commits to something else, *including* "no hand". Holding your hand up for a minute is one event, not six hundred. |
 | **Sliding limits** | `MIN_GAP` 0.8 s **per hand**, `MAX_PER_MIN` 30 **globally**. |
@@ -58,6 +59,112 @@ commit on the same frame and the second arrives nought seconds after the first.
 **A rate-limited gesture is DROPPED, not deferred.** It still latches, so it is
 never re-emitted once the limit lifts. Firing an action a second and a half
 after the hand that meant it has moved on is worse than not firing it.
+
+### The vocabulary has to be closed, and it was not at first
+
+`classify()` originally fell back to `f"{n} UP"` for any finger pattern it did
+not recognise, so **every hand pose resolved to some gesture**. A hand is
+always in some shape, so a hand in view was permanently asserting a command,
+and simply moving it fired a run of them — opening a fist passes through
+`POINT`, `PEACE`, `THREE`, `FOUR` on the way to `OPEN`, and each was a nameable
+gesture that a client would act on.
+
+It now returns `None` for anything outside a fixed set, and `None` means to the
+debouncer exactly what "no hand" means: nothing to fire, and clear the latch.
+Transitional poses fall in the gap and are silent.
+
+```
+FIST  OPEN  POINT  PEACE  THUMB  CALL  ROCK  PINCH
+```
+
+`THREE` and `FOUR` were **removed on purpose** — they are what a hand passes
+through while opening. `PINKY` too: it is what a relaxed hand does.
+
+Narrow further with `HERMES_CAMERA_GESTURE_SET=PINCH,PEACE` in the unit. That
+is not the same as binding the others to nothing on the client: gestures
+narrowed away here never consume the rate limit.
+
+An unrecognised hand still gets a caption on the live overlay (`3 UP ~`, the
+tilde meaning "not a command"), because "why is nothing firing" needs an answer.
+Only `gesture` — which may be `null` in `hands.json` — reaches the debouncer.
+
+### PINCH, and why it needs the landmarks
+
+A pinch cannot be read off five extension booleans: the index is curled enough
+that the extension test can go either way. It is two ratios instead, both
+against the hand's own wrist-to-knuckle length so they hold at any distance
+from the camera:
+
+| | |
+|---|---|
+| `pinch_ratio` | thumb tip → index tip. Small when pinched. |
+| `index_reach` | index tip → wrist. Separates a PINCH from a FIST, which *also* brings those two tips together. What differs is whether the index tip is out in front of the hand or folded back against the palm. |
+
+**Distances must be aspect-corrected, and this is not a detail.** MediaPipe
+normalises x by frame width and y by frame height separately, and this camera's
+frame is portrait. Measured on the twelve real fixtures, thumb-tip to index-tip
+over hand scale:
+
+| pose | raw | aspect-corrected |
+|---|---|---|
+| thumb_up | 0.549 – 1.447 | 0.924 – 0.932 |
+| victory | 1.030 – 1.247 | 1.089 – 1.092 |
+| pointing | 0.993 – 1.098 | 1.067 – 1.071 |
+
+Raw swings **2.6×** across rotations of the *same pose*. A threshold on a raw
+distance is really a threshold on how the hand happens to be turned.
+`fingers_extended()` survived without the correction only because it compares
+two distances in nearly the same direction, so the distortion cancels.
+
+**The shipped thresholds are provisional** — the fixtures establish where
+*not* pinching sits (0.92–1.09) and say nothing about where your pinch lands.
+
+```bash
+python3 tools/gesture_calibrate.py                  # live readout of both ratios
+python3 tools/gesture_calibrate.py --collect pinch  # sample a held pose for 8s
+python3 tools/gesture_calibrate.py --collect fist
+```
+
+Then set `HERMES_PINCH_MAX` and `HERMES_PINCH_MIN_REACH` in the unit. If your
+pinch and your fist *overlap* on these numbers, no threshold separates them and
+the answer is a different discriminator, not a cleverer cutoff.
+
+### Where the lag is
+
+Two independent halves, reported separately on every event because they are
+reduced by completely different means:
+
+| field | what it is | knob |
+|---|---|---|
+| `latency_ms` | capture → decision on the deciding frame: inference + queueing | `HERMES_CAMERA_HANDS_HZ` |
+| `dwell_ms` | how long the gesture had to be held before the debounce committed | `WINDOW` / `MAJORITY` |
+
+```bash
+journalctl --user -u hermes-camera | grep "gesture seq=" | tail
+# [camera] gesture seq=7 RIGHT PEACE [2] score=0.94 latency=48ms dwell=301ms
+```
+
+MEASURED cost of the detection rate, gesture subscriber attached:
+
+| | CPU | minimum dwell |
+|---|---|---|
+| 10 Hz (default) | **70.8%** of one core | 300 ms |
+| 15 Hz | **96.2%** of one core | 200 ms |
+
+25.4 percentage points for 100 ms. Not obviously worth it, which is why the
+default did not move — try `HERMES_CAMERA_HANDS_HZ=15` if you still want it
+after the vocabulary fix.
+
+**Before spending a core, note what the lag probably was.** With the open
+vocabulary, moving your hand fired transitional gestures, and each one consumed
+the 0.8 s per-hand minimum gap *and* the client's own cooldown. The gesture you
+actually meant then arrived inside a window opened by a gesture you did not,
+and was silently dropped — indistinguishable from lag, but caused by spurious
+events rather than slow ones. Closing the vocabulary removes that source
+entirely. Re-measure before tuning anything else.
+
+Also check the client's `cooldown_s`: at 1.5 s, two deliberate gestures in
+quick succession will have the second refused.
 
 ### Trap 19 wearing new clothes
 
