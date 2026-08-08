@@ -70,9 +70,41 @@ to test a return value must still be unable to send.
 
 | | |
 |---|---|
-| `gmail_unread` | count + senders + subjects of unread inbox mail |
-| `gmail_search` | Gmail query syntax (`from:bank newer_than:7d`) |
+| `gmail_unread` | count + senders + subjects of unread **inbox** mail |
+| `gmail_search` | any Gmail query, **including spam and trash** |
+| `gmail_read` | the actual text of one message |
 | `calendar_agenda` | upcoming events, 1–30 days ahead |
+
+### `gmail_unread` is inbox-only, on purpose
+
+"How many unread emails" means the inbox. Counting spam would make the number
+useless — and it is why "check my spam" did not work at first: the answer is
+`gmail_search`, not `gmail_unread`.
+
+### The API hides spam and trash unless you ask
+
+`users.messages.list` **excludes SPAM and TRASH by default**, so `in:spam`
+quietly returned nothing and read as "you have no spam" rather than "I did not
+look there". `includeSpamTrash=True` is now set on every search. That is the
+worst kind of default: it produces a confident, wrong, plausible answer.
+
+The tool description also now *lists* the query vocabulary. The capability was
+always there; the model simply had no way to know `in:spam` was available, and
+a tool the model cannot discover is a tool that does not exist.
+
+### What you can ask for
+
+```
+in:spam / in:trash / in:sent / in:anywhere
+is:unread / is:starred / is:important
+from:x@y.com / to:me / subject:invoice
+newer_than:2d / older_than:1m / after:2026/01/31
+has:attachment / filename:pdf / larger:5M
+category:promotions / social / updates
+```
+
+Combine freely: *"anything from the bank with an attachment this month"*,
+*"what's in my spam from the last week"*.
 
 Summaries are short and ordered, because these answers get **spoken**. The
 agent can always ask for more; a wall of message bodies read aloud is useless.

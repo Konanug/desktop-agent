@@ -22,6 +22,10 @@ def register(ctx) -> None:
         schema=schemas.GMAIL_SEARCH, handler=tools.gmail_search,
         description="Search Gmail (read-only)", emoji="🔎")
     ctx.register_tool(
+        name="gmail_read", toolset="hermes_google",
+        schema=schemas.GMAIL_READ, handler=tools.gmail_read,
+        description="Read one email's text (read-only)", emoji="📖")
+    ctx.register_tool(
         name="calendar_agenda", toolset="hermes_google",
         schema=schemas.CALENDAR_AGENDA, handler=tools.calendar_agenda,
         description="Upcoming Google Calendar events", emoji="📅")

@@ -59,8 +59,11 @@ def gmail_search(query: str = "", max_results: int = 10, **_kw) -> str:
     try:
         n = max(1, min(int(max_results or 10), MAX_ITEMS))
         svc = service("gmail", "v1")
+        # includeSpamTrash: the API EXCLUDES spam and trash by default, so
+        # `in:spam` would quietly return nothing and read as "no spam" rather
+        # than "I did not look there".
         res = svc.users().messages().list(
-            userId="me", q=query, maxResults=n).execute()
+            userId="me", q=query, maxResults=n, includeSpamTrash=True).execute()
         ids = res.get("messages", []) or []
         if not ids:
             return f"Nothing matched {query!r}."
@@ -75,6 +78,74 @@ def gmail_search(query: str = "", max_results: int = 10, **_kw) -> str:
             lines.append(f"- {frm}: {h.get('Subject', '(no subject)')[:80]}"
                          f"  [{h.get('Date', '')[:16]}]")
         return f"{len(lines)} match(es) for {query!r}:\n" + "\n".join(lines)
+    except Exception as e:
+        return _err(e)
+
+
+def _body_text(payload) -> str:
+    """Plain text out of a MIME tree, preferring text/plain over HTML.
+
+    Gmail nests parts arbitrarily deep (multipart/alternative inside
+    multipart/mixed inside...), so this walks rather than assuming a shape.
+    HTML is the fallback and is tag-stripped crudely -- the point is to let
+    someone hear or skim what a message SAYS, not to render it.
+    """
+    import base64, html, re
+
+    def walk(part, want):
+        if part.get("mimeType") == want:
+            data = (part.get("body") or {}).get("data")
+            if data:
+                return base64.urlsafe_b64decode(data).decode(
+                    "utf-8", errors="replace")
+        for sub in part.get("parts") or []:
+            got = walk(sub, want)
+            if got:
+                return got
+        return ""
+
+    text = walk(payload, "text/plain")
+    if not text:
+        raw = walk(payload, "text/html")
+        text = re.sub(r"<[^>]+>", " ", raw)
+        text = html.unescape(text)
+    return re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]{2,}", " ", text)).strip()
+
+
+def gmail_read(message_id: str = "", query: str = "", max_chars: int = 2000,
+               **_kw) -> str:
+    """The actual text of one message.
+
+    Takes a query as well as an id, because in practice nobody has a message
+    id -- they say "read me the one from the bank". With a query it reads the
+    single newest match and says which one it picked, so a wrong pick is
+    visible rather than silent.
+    """
+    try:
+        svc = service("gmail", "v1")
+        mid = str(message_id or "").strip()
+        if not mid:
+            q = str(query or "").strip()
+            if not q:
+                return "Give either a message_id or a query to find one."
+            res = svc.users().messages().list(
+                userId="me", q=q, maxResults=1, includeSpamTrash=True).execute()
+            hits = res.get("messages", []) or []
+            if not hits:
+                return f"Nothing matched {q!r}."
+            mid = hits[0]["id"]
+        full = svc.users().messages().get(
+            userId="me", id=mid, format="full").execute()
+        h = {x["name"]: x["value"]
+             for x in full.get("payload", {}).get("headers", [])}
+        body = _body_text(full.get("payload", {}))
+        n = max(200, min(int(max_chars or 2000), 8000))
+        clipped = body[:n]
+        more = f"\n\n[...{len(body) - n} more characters]" if len(body) > n else ""
+        return (f"From: {h.get('From', '?')}\n"
+                f"Date: {h.get('Date', '?')}\n"
+                f"Subject: {h.get('Subject', '(no subject)')}\n"
+                f"\n{clipped or '(no readable text body)'}{more}")
     except Exception as e:
         return _err(e)
 
