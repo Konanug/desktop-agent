@@ -165,6 +165,38 @@ def _rms(frame: np.ndarray) -> float:
     return float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
 
 
+class NoiseFloor:
+    """A rolling estimate of what this room sounds like when nobody is talking.
+
+    Measuring once at startup is not enough and was the second half of the
+    runaway-capture bug. The threshold was fixed the moment the service
+    started, so a room that later got louder -- music, a fan, a conversation
+    across the room -- read as continuous speech, the silence timer never
+    filled, and every capture ran to the ceiling.
+
+    Fed only while LISTENING, never during a capture: during a capture the
+    speech itself is the loudest thing present, and folding that in would drag
+    the floor up and make the endpointer progressively deafer exactly when it
+    needs to be sharp.
+
+    The median is doing real work. A mean would be pulled up by the occasional
+    door or cough; the median of a few seconds of a mostly-quiet room is the
+    room.
+    """
+
+    def __init__(self, seconds: float = 6.0):
+        self._vals = collections.deque(
+            maxlen=max(4, int(seconds * protocol.RATE / protocol.FRAME)))
+
+    def push(self, frame) -> None:
+        self._vals.append(_rms(frame))
+
+    def value(self, fallback: float = 0.0) -> float:
+        if len(self._vals) < 4:
+            return fallback
+        return float(np.median(np.fromiter(self._vals, dtype=np.float32)))
+
+
 class Endpointer:
     """Decide when the person has stopped talking.
 
@@ -178,6 +210,10 @@ class Endpointer:
     """
 
     def __init__(self, floor: float):
+        self.set_floor(floor)
+
+    def set_floor(self, floor: float) -> None:
+        """Recomputed from the room JUST BEFORE each capture, not at startup."""
         self.floor = floor
         # 3x the measured noise floor, with an absolute minimum so a silent
         # room (floor near 0) does not make every rustle count as speech.

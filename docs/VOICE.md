@@ -158,6 +158,73 @@ watch -n1 "python3 -c \"import json;d=json.load(open('/run/user/1000/hermes-voic
 
 Silence reads ~250 here. Speaking should push it well past the threshold.
 
+## When the microphone is actually recording
+
+Worth being exact about, because "always listening" and "always recording" are
+different things and only one of them is true.
+
+**The mic stream is open the whole time the service runs.** A wake word cannot
+work otherwise — something has to be listening to notice the phrase. Audio is
+read in 80 ms frames, fed to the detector, held in a 0.5 s ring so the first
+syllable after the wake is not clipped, and then discarded. **Nothing is
+written to disk, ever.**
+
+A *capture* — the part that becomes a transcript — starts only on a wake and
+ends on the FIRST of:
+
+| | |
+|---|---|
+| `SILENCE_END` | 0.8 s of continuous quiet, **whether or not anything was said** |
+| `LEAD_SILENCE` | 2 s with no speech at all — a false wake gives up fast |
+| `MAX_UTTERANCE` | 10 s hard ceiling, logged loudly when hit |
+
+`status.json` publishes `capturing_s` while a turn is in progress, so how long
+the mic has actually been recording is answerable from outside at any moment.
+
+### Two bugs that made captures run long
+
+Both were real and both are pinned by `tests/test_voice.py`, verified to fail
+against the old code.
+
+1. **A false wake with nobody talking recorded to the ceiling.** The loop only
+   ended on silence once speech had *already* been heard (`quiet_for >=
+   SILENCE_END and spoke_for > 0`), so a wake firing on a television in an
+   empty room could not end early — the cheapest case was accidentally the most
+   expensive. Now silence ends a capture regardless, plus the `LEAD_SILENCE`
+   bail.
+2. **The speech threshold was measured once at startup and never updated.** A
+   room that later got louder read as continuous speech, the silence timer
+   never filled, and every capture ran to the ceiling. The floor is now a
+   rolling median of the last few seconds, fed only while listening — folding
+   a capture's own speech back in would make the endpointer progressively
+   deafer.
+
+The ceiling is also counted in `status.json` as `capped`. If that number
+climbs, the threshold is wrong for the room rather than the person having
+talked for a long time.
+
+### Bounded on audio, not on wall clock
+
+The capture limit counts *sound captured*, not seconds elapsed. They are nearly
+identical while the pipe delivers in real time, and they diverge exactly when
+it matters: under load `arecord` returns a burst of buffered frames, and a
+wall-clock ceiling would let far more than 10 s of audio through while
+believing it had stopped in time.
+
+### If you would rather it not listen at all
+
+```bash
+systemctl --user stop hermes-voice && systemctl --user disable hermes-voice
+```
+
+That closes the stream, ends the `arecord` process, and the panel's MIC light
+goes to a positively-observed off. It will not come back on a reboot.
+
+The alternative that removes always-on listening entirely is **push-to-talk on
+the HAT's button** (GPIO 17, free and verified readable). That drops the wake
+word — a physical press replaces it — and the mic stays closed at rest. Not
+built; it is a real option if the always-open stream is not acceptable.
+
 ## Setup
 
 ```bash

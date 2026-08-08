@@ -130,6 +130,10 @@ def test_status_never_carries_a_transcript():
     svc.loop_tick = time.monotonic()
     svc.level = svc.level_peak = svc.wake_peak = 0.0
     svc.ends = None
+    from voice import listen
+    svc.floor = listen.NoiseFloor()
+    svc.capped = 0
+    svc.capture_started = 0.0
     doc = svc.status_doc()
     blob = json.dumps(doc).lower()
     for leaky in ("text", "transcript", "utterance", "said", "heard_text"):
@@ -162,6 +166,12 @@ def test_status_survives_numpy_scalars():
     svc.loop_tick = time.monotonic()
     svc.level = np.float32(3.5); svc.level_peak = np.float32(9.0)
     svc.wake_peak = np.float32(0.1); svc.ends = None
+    from voice import listen
+    svc.floor = listen.NoiseFloor()
+    for _ in range(8):
+        svc.floor.push((np.random.default_rng(2).standard_normal(1280) * 50).astype(np.int16))
+    svc.capped = 0
+    svc.capture_started = 0.0
     json.loads(json.dumps(svc.status_doc()))       # must not raise
 
 
@@ -230,6 +240,117 @@ def test_mic_busy_only_while_capturing():
         on, busy = p._mic()
         assert on is True and busy is expect_busy, f"{state} -> busy={busy}"
     os.unlink(path)
+
+
+# -- the mic must not stay on -------------------------------------------
+# Reported as "sometimes it was left on way after I intended". It was, and for
+# two independent reasons. These are the pins.
+class _FakeEnds:
+    """Speech is whatever is loud; silence is whatever is not."""
+    def __init__(self, threshold=100.0):
+        self.threshold = threshold
+        self.floor = threshold / 3.0
+    def set_floor(self, f):
+        self.floor = f
+        self.threshold = max(f * 3.0, 120.0)
+    def is_speech(self, frame):
+        import numpy as np
+        return float(np.sqrt(np.mean(frame.astype(np.float32) ** 2))) > self.threshold
+
+
+def _svc_for_capture(frames):
+    """A Service wired to read a fixed list of frames, then block forever."""
+    import numpy as np
+    from voice.__main__ import Service
+    from voice import listen
+    svc = Service.__new__(Service)
+    seq = list(frames)
+
+    class R:
+        def read_frame(self):
+            return seq.pop(0) if seq else np.zeros(1280, np.int16)
+    svc.rec = R()
+    svc.ends = _FakeEnds()
+    svc.floor = listen.NoiseFloor()
+    svc.pre = listen.PreRoll()
+    svc.capped = 0
+    svc.capture_started = 0.0
+    return svc
+
+
+def _loud(n):
+    import numpy as np
+    rng = np.random.default_rng(0)
+    return [(rng.standard_normal(1280) * 3000).astype(np.int16) for _ in range(n)]
+
+
+def _quiet(n):
+    import numpy as np
+    return [np.zeros(1280, np.int16) for _ in range(n)]
+
+
+def test_a_false_wake_with_no_speech_ends_fast():
+    """THE REGRESSION THAT PROMPTED THIS.
+
+    The original loop only broke on silence once speech had ALREADY been heard
+    (`quiet_for >= SILENCE_END and spoke_for > 0`), so a wake word firing on a
+    television with nobody in the room could not end early and recorded until
+    the ceiling. The cheapest case was accidentally the most expensive.
+    """
+    svc = _svc_for_capture(_quiet(400))
+    t0 = time.monotonic()
+    out = svc.capture_utterance()
+    frames_read = 400 - 0
+    assert out is None, "silence should not be treated as an utterance"
+    # It must give up around LEAD_SILENCE, nowhere near MAX_UTTERANCE.
+    assert svc.capped == 0, "a silent false wake ran to the ceiling"
+
+
+def test_speech_then_silence_ends_on_the_silence():
+    svc = _svc_for_capture(_loud(25) + _quiet(30) + _loud(200))
+    out = svc.capture_utterance()
+    assert out is not None, "real speech was discarded"
+    # 25 loud + ~10 quiet frames of trailing silence, not the 200 that follow.
+    assert len(out) / protocol.RATE < 4.0, \
+        f"kept recording past the silence: {len(out)/protocol.RATE:.1f}s"
+    assert svc.capped == 0
+
+
+def test_continuous_noise_still_hits_a_ceiling_and_says_so():
+    """If the room never goes quiet the capture must still END -- and the
+    ceiling being hit is worth reporting, because it means the threshold is
+    wrong for the room rather than that the person talked for a long time."""
+    svc = _svc_for_capture(_loud(1000))
+    out = svc.capture_utterance()
+    assert out is not None
+    assert len(out) / protocol.RATE <= protocol.MAX_UTTERANCE + 0.5
+    assert svc.capped == 1, "hitting the ceiling was not recorded"
+
+
+def test_the_threshold_follows_the_room_not_the_startup_moment():
+    """The other half of the bug: measured once at startup, the threshold went
+    stale the first time the room got louder, and every capture then ran to
+    the ceiling because nothing ever read as silence."""
+    from voice import listen
+    import numpy as np
+    e = listen.Endpointer(floor=1.0)
+    quiet_threshold = e.threshold
+    nf = listen.NoiseFloor()
+    rng = np.random.default_rng(1)
+    for _ in range(80):                       # the room got loud
+        nf.push((rng.standard_normal(1280) * 800).astype(np.int16))
+    e.set_floor(nf.value())
+    assert e.threshold > quiet_threshold * 2, \
+        f"threshold did not follow the room: {quiet_threshold} -> {e.threshold}"
+
+
+def test_capture_length_is_published_while_recording():
+    """So 'how long has the mic actually been recording' is answerable from
+    outside, which is the whole reason the question came up."""
+    svc = _svc_for_capture(_quiet(10))
+    assert svc.capture_started == 0.0
+    svc.capture_utterance()
+    assert svc.capture_started == 0.0, "capture timer not cleared afterwards"
 
 
 def _run() -> int:

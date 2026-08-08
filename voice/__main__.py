@@ -100,6 +100,9 @@ class Service:
         self.level_peak = 0.0       # loudest recently
         self.wake_peak = 0.0        # highest wake score recently
         self._decay_at = 0.0
+        self.floor = listen.NoiseFloor()
+        self.capped = 0             # captures that ran to the ceiling
+        self.capture_started = 0.0
 
     # -- status ---------------------------------------------------------
     def status_doc(self) -> dict:
@@ -133,6 +136,12 @@ class Service:
             "wake_score": _num(self.wake.score, 3),
             "wake_peak": _num(self.wake_peak, 3),
             "wake_threshold": protocol.WAKE_THRESHOLD,
+            "room_floor": _num(self.floor.value(), 1),
+            "capped": self.capped,
+            # How long the mic has been ACTIVELY RECORDING, right now. Zero
+            # unless a turn is in progress.
+            "capturing_s": (_num(time.monotonic() - self.capture_started, 1)
+                            if self.capture_started else 0.0),
             "error": self.last_error,
         }
 
@@ -156,26 +165,62 @@ class Service:
         a failure that is loud and finite beats one that is silent and
         permanent.
         """
+        # Re-derive the threshold from the room AS IT IS NOW, from the seconds
+        # immediately before the wake. Measured once at startup it went stale
+        # the first time the room got louder.
+        if self.ends is not None:
+            self.ends.set_floor(self.floor.value(fallback=self.ends.floor))
+
         frames = self.pre.drain()
         quiet_for = 0.0
         spoke_for = 0.0
         t0 = time.monotonic()
         per_frame = protocol.FRAME / protocol.RATE
+        self.capture_started = t0
+        capped = False
 
-        while time.monotonic() - t0 < protocol.MAX_UTTERANCE:
+        # BOUNDED ON AUDIO TIME, NOT WALL CLOCK. They are nearly the same while
+        # the pipe delivers in real time, and they diverge exactly when it
+        # matters: under load arecord hands back a burst of buffered frames, so
+        # a wall-clock ceiling would let far more than MAX_UTTERANCE of sound
+        # through while claiming it had stopped in time. What is being limited
+        # here is how long the microphone recorded, so that is what is counted.
+        captured = 0.0
+        while True:
+            if captured >= protocol.MAX_UTTERANCE:
+                capped = True
+                break
             f = self.rec.read_frame()
             if f is None:
                 return None
             frames.append(f)
+            captured += per_frame
             if self.ends is not None and self.ends.is_speech(f):
                 quiet_for = 0.0
                 spoke_for += per_frame
             else:
                 quiet_for += per_frame
-                if quiet_for >= protocol.SILENCE_END and spoke_for > 0:
+                # ENDS ON SILENCE WHETHER OR NOT ANYTHING WAS SAID. The old
+                # condition also required spoke_for > 0, so a false wake with
+                # nobody talking could not end early and recorded to the
+                # ceiling -- the cheapest case was the most expensive.
+                if quiet_for >= protocol.SILENCE_END:
                     break
+            # And bail fast on a wake that nothing followed.
+            if spoke_for == 0.0 and captured >= protocol.LEAD_SILENCE:
+                break
+
+        if capped:
+            # Worth saying out loud: hitting the ceiling means the endpointer
+            # never saw the room go quiet, which is usually a threshold set too
+            # low for a room that has since got louder.
+            self.capped += 1
+            print(f"[voice] capture hit the {protocol.MAX_UTTERANCE:.0f}s "
+                  f"ceiling (threshold {self.ends.threshold:.0f}, room "
+                  f"{self.floor.value():.0f}) -- ending anyway", flush=True)
+        self.capture_started = 0.0
         if spoke_for < protocol.MIN_UTTERANCE:
-            return None                     # a cough, not a request
+            return None                     # a cough, or a false wake
         return np.concatenate(frames) if frames else None
 
     def handle_wake(self) -> None:
@@ -303,6 +348,9 @@ def main(argv=None) -> int:
             break
         svc.pre.push(frame)
 
+        # Only while LISTENING: folding a capture's own speech into the floor
+        # would make the endpointer progressively deafer.
+        svc.floor.push(frame)
         svc.level = listen.frame_rms(frame)
         svc.level_peak = max(svc.level_peak, svc.level)
         svc.wake_peak = max(svc.wake_peak, svc.wake.score)

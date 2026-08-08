@@ -45,9 +45,19 @@ STT_MODEL = os.environ.get("HERMES_VOICE_STT", "base.en")
 
 # Utterance capture. A person pausing mid-sentence must not end the turn, and a
 # person who has finished must not wait around.
-MAX_UTTERANCE = 15.0    # hard ceiling; a stuck VAD cannot record forever
+MAX_UTTERANCE = 10.0    # hard ceiling; a stuck endpointer cannot record forever
 SILENCE_END = 0.8       # trailing silence that ends the turn
 MIN_UTTERANCE = 0.4     # shorter than this is a cough, not a request
+
+# If NOTHING is said in this long after a wake, give up immediately.
+#
+# This is the difference between a false wake costing 2 s and costing the full
+# ceiling. The first version only ended a capture once speech had been heard
+# ("quiet_for >= SILENCE_END and spoke_for > 0"), so a wake word that fired on
+# a television with nobody in the room recorded until MAX_UTTERANCE -- the
+# cheapest case was accidentally the most expensive. Reported as the mic being
+# "left on way after I intended", and that was exactly right.
+LEAD_SILENCE = 2.0
 PREROLL = 0.5           # audio kept from BEFORE the wake word fired, so the
                         # first syllable after it is never clipped
 
