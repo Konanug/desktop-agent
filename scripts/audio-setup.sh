@@ -53,7 +53,37 @@ set_ 'Headphone' 110
 set_ 'Speaker'   110
 set_ 'Playback'  230        # the DAC's own level, ahead of both outputs
 
-# Capture. The two mics are the point of this HAT.
-set_ 'Capture'   150
+# CAPTURE. The two mics are the point of this HAT, and this block is the
+# difference between them working and not.
+#
+# `Input Mixer Boost` IS THE SWITCH THAT CONNECTS THE MICS AT ALL. It comes up
+# OFF, and with it off the ADC produces a flat ~1.0 RMS -- digital silence --
+# no matter what every other capture control says. Every one of them looked
+# correct: LINPUT1/RINPUT1 routed on, Capture at +30 dB and unmuted, ADC
+# unmuted, ALC off. MEASURED, same room, back to back:
+#
+#     as shipped                 ambient rms   0.98    (silence)
+#     + Input Mixer Boost on     ambient rms 146       (real audio)
+#     + LINPUT1 boost +20 dB     ambient rms 4471      (far too hot)
+#
+# This is why "the mics are live" was reported wrongly earlier. A 3 s arecord
+# showed peaks around 250, which looked like a working microphone; reading the
+# stream frame by frame showed all of it in the FIRST 80 ms and silence after.
+# That burst is the stream-start transient, not sound. A short recording
+# summarised by its peak cannot tell those apart -- look at the level over
+# time, or a dead mic will pass.
+#
+# Gain staging, measured: LINPUT1 boost at 0 dB with Capture at 63 gives
+# ambient rms 178 and 67x headroom before clipping, which leaves plenty of room
+# for speech. Raising the boost one step costs 6x the headroom for signal that
+# is already ample.
+set_ 'Left Input Mixer Boost'    on
+set_ 'Right Input Mixer Boost'   on
+set_ 'Left Input Boost Mixer LINPUT1'  0
+set_ 'Right Input Boost Mixer RINPUT1' 0
+set_ 'Capture'   63
+# A high-pass filter costs nothing and removes the DC/rumble that otherwise
+# sits under everything the wake word sees.
+set_ 'ADC High Pass Filter' on
 
 echo "[audio] $CARD configured"

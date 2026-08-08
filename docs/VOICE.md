@@ -129,6 +129,35 @@ create by accident. The journal gets length and timing only:
 
 ---
 
+## The mic is not connected until you connect it
+
+`Input Mixer Boost` on the WM8960 comes up **off**, and with it off the ADC
+returns a flat ~1.0 RMS whatever else is set. Every other control reads
+correct: LINPUT1/RINPUT1 routed on, `Capture` at +30 dB and unmuted, ADC
+unmuted, ALC off.
+
+| | ambient RMS |
+|---|---|
+| as shipped | **0.98** — silence |
+| `+ Input Mixer Boost on` | **146** — real audio |
+| `+ LINPUT1 boost +20 dB` | 4471 — clips on speech |
+
+`scripts/audio-setup.sh` sets it, along with `Capture 63` and a high-pass
+filter, giving ambient RMS ~178 with 67× headroom.
+
+**How this was missed at first, because the same mistake is easy to repeat:** a
+3-second `arecord` showed peaks around 250, which looks exactly like a working
+microphone. Reading the stream frame by frame showed all of it in the **first
+80 ms** and silence after — the stream-start transient, not sound. A short
+recording summarised by its peak cannot tell those apart. Watch the level over
+time:
+
+```bash
+watch -n1 "python3 -c \"import json;d=json.load(open('/run/user/1000/hermes-voice/status.json'));print(d['level'],d['level_peak'],d['speech_threshold'])\""
+```
+
+Silence reads ~250 here. Speaking should push it well past the threshold.
+
 ## Setup
 
 ```bash

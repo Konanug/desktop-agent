@@ -93,7 +93,7 @@ Rebuild: `python3 tools/render_frames.py --out assets/anim` (~5 min).
 | Host | Raspberry Pi 5, Debian 13 trixie, aarch64, 7.9 GB RAM |
 | User | `alanmyin` — **everything runs as this user, never root** |
 | Panel | Waveshare HDMI LCD, **800×480** RGB565, `/dev/fb0` via vc4 KMS fbdev. Mode is FORCED in `cmdline.txt` (`video=HDMI-A-1:800x480@60D`) because the panel returns **zero bytes of EDID** |
-| Audio | ReSpeaker 2-Mic Pi HAT (WM8960, I2C 0x1a + I2S). ALSA card `wm8960soundcard`, **excluded from WirePlumber** so nothing fights the mixer. Mixer set by `hermes-audio.service`, verified across a reboot. Mics verified live; **speaker output never confirmed — nothing was plugged in** |
+| Audio | ReSpeaker 2-Mic Pi HAT (WM8960, I2C 0x1a + I2S). ALSA card `wm8960soundcard`, **excluded from WirePlumber** so nothing fights the mixer. Mixer set by `hermes-audio.service`, verified across a reboot. **`Input Mixer Boost` is the switch that connects the mics at all** — off by default, and with it off the ADC returns flat silence however correct every other control looks. Mics now genuinely live (ambient rms 178 vs 0.98). **Speaker output still never confirmed — nothing plugged in** |
 | Hermes | v0.20.0 at `~/.hermes/`, `hermes` on PATH |
 | Model | `openai-codex/gpt-5.6-terra`; auxiliary → `gpt-5.6-luna` |
 | Services | `hermes-gateway`, `hermes-display`, `hermes-camera`, `hermes-usage`, `hermes-audio`, `hermes-voice` (user) · `hermes-fbcon-detach` (system) |
@@ -333,6 +333,26 @@ is asserted at import and pinned by `tests/test_gestures.py` — which runs on
 the **Pi**, because the client uses explicit-width ctypes types rather than
 `ctypes.wintypes` precisely so its structs can be tested off Windows. Both
 tests were verified to FAIL against the shipped version.
+
+**31. A SHORT RECORDING SUMMARISED BY ITS PEAK CANNOT TELL A LIVE MIC FROM A
+DEAD ONE.** The ReSpeaker's `Input Mixer Boost` comes up OFF, and with it off
+the WM8960's ADC returns a flat ~1.0 RMS — digital silence — while every other
+capture control reads correct (LINPUT1 routed on, Capture +30 dB unmuted, ADC
+unmuted, ALC off). A 3 s `arecord` showed peaks of ~250 and was reported here
+as "both mics measured live". It was not: reading the stream frame by frame
+showed **all of that energy in the first 80 ms and silence thereafter** — the
+stream-start transient, not sound. Measure the level OVER TIME, or a dead
+microphone passes. Measured back to back in one room: as-shipped 0.98 rms,
+`Input Mixer Boost on` 146, plus a +20 dB LINPUT1 boost 4471 (which then clips
+on speech). `scripts/audio-setup.sh` sets it.
+
+**32. `round(numpy.float32)` RETURNS `numpy.float32`, and json.dumps refuses
+it.** onnxruntime hands back float32 scores; rounding them for a status file
+looks like it produces a Python float and does not. The crash lands in the
+status writer, far from the value's origin, and only when that field is
+non-zero. `tests/test_hands.py` already pinned this for the camera and the
+lesson still had to be relearned — coerce with `float()` at the publishing
+boundary, not per field.
 
 **26. Feeding unrelated stills to a `RunningMode.VIDEO` tracker measures
 nothing.** VIDEO mode carries a track between frames and uses the previous

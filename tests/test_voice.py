@@ -120,7 +120,7 @@ def test_status_never_carries_a_transcript():
     from voice.__main__ import Service
     svc = Service.__new__(Service)
     svc.rec = type("R", (), {"proc": None})()
-    svc.wake = type("W", (), {"available": True, "error": None})()
+    svc.wake = type("W", (), {"available": True, "error": None, "score": 0.0})()
     svc.stt = type("S", (), {"available": True, "error": None, "last_ms": 12.0})()
     svc.speaker = type("P", (), {"available": True, "error": None})()
     svc.limit = sink.RateLimit()
@@ -128,6 +128,8 @@ def test_status_never_carries_a_transcript():
     svc.heard = svc.refused = 0
     svc.last_error = None
     svc.loop_tick = time.monotonic()
+    svc.level = svc.level_peak = svc.wake_peak = 0.0
+    svc.ends = None
     doc = svc.status_doc()
     blob = json.dumps(doc).lower()
     for leaky in ("text", "transcript", "utterance", "said", "heard_text"):
@@ -136,6 +138,31 @@ def test_status_never_carries_a_transcript():
     # And it must serialise -- a status file that cannot be written is a panel
     # that silently stops knowing whether the mic is on.
     json.loads(json.dumps(doc))
+
+
+def test_status_survives_numpy_scalars():
+    """THE REGRESSION. onnxruntime returns numpy float32 wake scores, which
+    survive round() and then kill json.dumps in the status writer -- a crash
+    landing nowhere near the code that produced the value. The camera learned
+    this already (tests/test_hands.py); this is the same rule, arrived at the
+    hard way a second time."""
+    import numpy as np
+    from voice.__main__ import Service
+    svc = Service.__new__(Service)
+    svc.rec = type("R", (), {"proc": None})()
+    svc.wake = type("W", (), {"available": True, "error": None,
+                              "score": np.float32(0.4242)})()
+    svc.stt = type("S", (), {"available": True, "error": None,
+                             "last_ms": np.float32(12.0)})()
+    svc.speaker = type("P", (), {"available": True, "error": None})()
+    svc.limit = sink.RateLimit()
+    svc.state, svc.started_at = "listening", time.time()
+    svc.heard = svc.refused = 0
+    svc.last_error = None
+    svc.loop_tick = time.monotonic()
+    svc.level = np.float32(3.5); svc.level_peak = np.float32(9.0)
+    svc.wake_peak = np.float32(0.1); svc.ends = None
+    json.loads(json.dumps(svc.status_doc()))       # must not raise
 
 
 # -- speaking -------------------------------------------------------------

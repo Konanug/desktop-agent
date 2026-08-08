@@ -53,6 +53,21 @@ def _atomic_write(path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
+def _num(x, digits: int = 2) -> float:
+    """Round AND coerce to a builtin float.
+
+    round(numpy.float32) returns numpy.float32, which json.dumps refuses --
+    and it refuses in the status writer, a long way from wherever the value
+    came from. onnxruntime hands back float32 scores and numpy hands back
+    float32 RMS, so this boundary sees them constantly. Casting once, here, is
+    cheaper than remembering at every call site.
+    """
+    try:
+        return round(float(x), digits)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _muted() -> str | None:
     if protocol.disabled_path().exists():
         return "disabled by owner (~/.config/hermes-pi/voice.disabled)"
@@ -77,6 +92,14 @@ class Service:
         self.last_status = 0.0
         self.last_error: str | None = None
         self.loop_tick = time.monotonic()
+        # LIVE DIAGNOSTICS. Without these "it is listening and nothing
+        # happens" has no next step: you cannot tell silence at the mic from a
+        # wake word that is simply scoring below threshold. Both decay, so
+        # they describe the last few seconds rather than the session.
+        self.level = 0.0            # current audio RMS
+        self.level_peak = 0.0       # loudest recently
+        self.wake_peak = 0.0        # highest wake score recently
+        self._decay_at = 0.0
 
     # -- status ---------------------------------------------------------
     def status_doc(self) -> dict:
@@ -96,13 +119,20 @@ class Service:
             "stt_model": protocol.STT_MODEL,
             "stt_ready": self.stt.available,
             "stt_error": self.stt.error,
-            "stt_ms": round(self.stt.last_ms, 1),
+            "stt_ms": _num(self.stt.last_ms, 1),
             "tts_ready": self.speaker.available,
             "tts_error": self.speaker.error,
             "heard": self.heard,
             "refused": self.refused,
             "in_last_hour": self.limit.in_last_hour,
-            "loop_idle_s": round(time.monotonic() - self.loop_tick, 2),
+            "loop_idle_s": _num(time.monotonic() - self.loop_tick),
+            # Is sound arriving, and is it anywhere near the wake word?
+            "level": _num(self.level, 1),
+            "level_peak": _num(self.level_peak, 1),
+            "speech_threshold": _num(self.ends.threshold, 1) if self.ends else None,
+            "wake_score": _num(self.wake.score, 3),
+            "wake_peak": _num(self.wake_peak, 3),
+            "wake_threshold": protocol.WAKE_THRESHOLD,
             "error": self.last_error,
         }
 
@@ -272,6 +302,15 @@ def main(argv=None) -> int:
                   flush=True)
             break
         svc.pre.push(frame)
+
+        svc.level = listen.frame_rms(frame)
+        svc.level_peak = max(svc.level_peak, svc.level)
+        svc.wake_peak = max(svc.wake_peak, svc.wake.score)
+        now_m = time.monotonic()
+        if now_m - svc._decay_at > 5.0:      # "recently" means five seconds
+            svc._decay_at = now_m
+            svc.level_peak = svc.level
+            svc.wake_peak = svc.wake.score
 
         # NOT WHILE SPEAKING. Otherwise the assistant's own voice goes into the
         # wake detector and it answers itself -- and piper through a speaker in

@@ -138,7 +138,12 @@ class WakeWord:
         if self._model is None:
             return False
         scores = self._model.predict(frame)
-        self.score = max(scores.values()) if scores else 0.0
+        # float(), NOT just max(). onnxruntime hands back numpy float32, which
+        # survives round() and then blows up json.dumps at the far end of the
+        # program -- in the status writer, nowhere near here.
+        # tests/test_hands.py pins the same rule for the camera; this is that
+        # lesson arriving late.
+        self.score = float(max(scores.values())) if scores else 0.0
         return self.score >= self.threshold
 
     def reset(self) -> None:
@@ -182,8 +187,20 @@ class Endpointer:
         return _rms(frame) > self.threshold
 
 
-def measure_floor(rec: Recorder, seconds: float = 1.0) -> float:
-    """Sample the room to find out what silence sounds like here."""
+def measure_floor(rec: Recorder, seconds: float = 1.0,
+                  discard: float = 0.5) -> float:
+    """Sample the room to find out what silence sounds like here.
+
+    THE FIRST FRAMES ARE NOT THE ROOM. arecord hands back whatever was in the
+    ALSA buffer when the stream opened, which is silence, so measuring
+    immediately reports a floor near zero regardless of how loud the room is --
+    observed as `room noise floor 2` on a box that was not that quiet. It only
+    makes the endpointer MORE sensitive, so it never blocked anything, but it
+    also meant the number printed at startup was not a measurement of anything.
+    """
+    for _ in range(max(1, int(discard * protocol.RATE / protocol.FRAME))):
+        if rec.read_frame() is None:
+            return 0.0
     n = max(1, int(seconds * protocol.RATE / protocol.FRAME))
     vals = []
     for _ in range(n):
@@ -192,6 +209,11 @@ def measure_floor(rec: Recorder, seconds: float = 1.0) -> float:
             break
         vals.append(_rms(f))
     return float(np.median(vals)) if vals else 0.0
+
+
+def frame_rms(frame) -> float:
+    """Exposed so the service can publish a live level."""
+    return _rms(frame)
 
 
 class Transcriber:
