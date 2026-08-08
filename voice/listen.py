@@ -78,6 +78,42 @@ class Recorder:
             except Exception:
                 pass
 
+    def drain(self, limit: float = 30.0) -> float:
+        """Throw away whatever ALSA buffered while we were not reading.
+
+        THIS IS NOT HOUSEKEEPING, IT IS THE POINT OF ENDING A TURN. Between the
+        end of a capture and the return to listening the service is busy:
+        transcribing, posting, and possibly speaking. It is not calling
+        read_frame() during any of that, so the driver quietly buffers every
+        second of it. Without this, the first thing the next wake hears is
+        whatever was said while Hermes was answering -- including its own reply
+        out of the speaker -- delivered as though it had just been spoken.
+
+        Uses select() with a zero timeout, so it reads exactly what is already
+        waiting and never blocks on a quiet microphone. `limit` is a guard
+        against a pathological producer, in seconds of audio.
+
+        Returns the seconds discarded, which is worth logging: it is a direct
+        measure of how long the microphone went unattended.
+        """
+        import select
+        if self.proc is None or self.proc.stdout is None:
+            return 0.0
+        fd = self.proc.stdout.fileno()
+        chunk = protocol.FRAME * 2
+        dropped = 0
+        while dropped * protocol.FRAME < limit * self.rate:
+            r, _, _ = select.select([fd], [], [], 0)
+            if not r:
+                break
+            try:
+                if not self.proc.stdout.read(chunk):
+                    break
+            except OSError:
+                break
+            dropped += 1
+        return dropped * protocol.FRAME / self.rate
+
     def read_frame(self) -> np.ndarray | None:
         """Exactly FRAME samples, or None if the pipe died.
 

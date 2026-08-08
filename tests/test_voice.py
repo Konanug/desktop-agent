@@ -353,6 +353,56 @@ def test_capture_length_is_published_while_recording():
     assert svc.capture_started == 0.0, "capture timer not cleared afterwards"
 
 
+# -- one wake, one utterance --------------------------------------------
+def test_a_turn_ends_by_discarding_what_was_buffered_while_busy():
+    """THE POINT OF end_turn().
+
+    Between the end of a capture and the return to listening the service is
+    transcribing, posting, and possibly speaking -- and is NOT calling
+    read_frame() through any of it, so ALSA buffers the lot. Without draining,
+    the next wake's pre-roll begins with whatever was said while Hermes was
+    answering, including its own reply out of the speaker, presented as though
+    it had just been spoken.
+    """
+    from voice.__main__ import Service
+    from voice import listen
+    import numpy as np
+
+    drained = {"n": 0}
+    svc = Service.__new__(Service)
+    svc.rec = type("R", (), {"drain": lambda self, limit=30.0: (
+        drained.__setitem__("n", drained["n"] + 1) or 3.2)})()
+    svc.wake = type("W", (), {"reset": lambda self: None, "score": 0.0,
+                              "available": True, "error": None})()
+    svc.pre = listen.PreRoll()
+    svc.pre.push(np.zeros(1280, np.int16))
+    svc.floor = listen.NoiseFloor()
+    svc.state = "thinking"
+    svc.publish = lambda force=False: None
+
+    svc.end_turn()
+    assert drained["n"] == 1, "buffered audio was not discarded"
+    assert len(svc.pre.frames) == 0, "stale pre-roll carried into the next turn"
+    assert svc.state == "listening", "did not return to needing the wake word"
+
+
+def test_every_exit_from_a_turn_closes_it():
+    """A path that skips end_turn() leaves the mic unattended-but-buffering and
+    the detector primed. There are four ways a turn can end -- nothing
+    captured, empty transcript, rate limited, delivered -- plus finishing
+    speaking, and all of them must go through the same door."""
+    import inspect
+    from voice import __main__ as m
+    src = inspect.getsource(m)
+    # No path may set state back to listening by hand; that is end_turn's job,
+    # so its own body is excluded -- everything AFTER it must delegate.
+    body = src.split("def handle_wake", 1)[1].split("def start", 1)[0]
+    stray = [ln.strip() for ln in body.splitlines()
+             if 'self.state = "listening"' in ln]
+    assert not stray, f"a turn exit bypasses end_turn(): {stray}"
+    assert src.count("self.end_turn()") >= 4, "not every exit closes the turn"
+
+
 def _run() -> int:
     fails = 0
     for name, fn in sorted(globals().items()):

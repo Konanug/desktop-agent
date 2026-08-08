@@ -223,16 +223,40 @@ class Service:
             return None                     # a cough, or a false wake
         return np.concatenate(frames) if frames else None
 
+    def end_turn(self) -> None:
+        """One wake, one utterance. Close the turn out completely.
+
+        The wake word must be said again for the next one -- there is
+        deliberately no follow-up window where it keeps listening for more.
+        That is a common assistant behaviour and it is exactly the thing that
+        makes people unsure whether the microphone is still on.
+
+        Three things have to happen together or the next turn inherits this
+        one: the detector is reset (otherwise the same utterance keeps scoring
+        above threshold and fires again immediately), the pre-roll ring is
+        emptied, and everything ALSA buffered while we were busy is thrown
+        away rather than replayed into the next capture.
+        """
+        self.wake.reset()
+        self.pre.frames.clear()
+        dropped = self.rec.drain()
+        self.floor = listen.NoiseFloor()      # the room may have changed
+        if dropped > 0.2:
+            print(f"[voice] turn closed; discarded {dropped:.1f}s captured "
+                  f"while busy -- say the wake word again", flush=True)
+        else:
+            print("[voice] turn closed -- say the wake word again", flush=True)
+        self.state = "listening"
+        self.publish(force=True)
+
     def handle_wake(self) -> None:
         self.state = "capturing"
         self.publish(force=True)
         print(f"[voice] wake ({self.wake.score:.2f}) -- listening", flush=True)
         audio = self.capture_utterance()
-        self.wake.reset()
         if audio is None:
             print("[voice] nothing usable captured", flush=True)
-            self.state = "listening"
-            self.publish(force=True)
+            self.end_turn()
             return
 
         secs = len(audio) / protocol.RATE
@@ -245,14 +269,14 @@ class Service:
         print(f"[voice] {secs:.1f}s audio -> {len(text)} chars "
               f"in {self.stt.last_ms:.0f}ms", flush=True)
         if not text:
-            self.state = "listening"
+            self.end_turn()
             return
 
         why = self.limit.check()
         if why is not None:
             self.refused += 1
             print(f"[voice] refused: rate limit ({why})", flush=True)
-            self.state = "listening"
+            self.end_turn()
             return
 
         ok, detail = sink.post(text)
@@ -263,7 +287,7 @@ class Service:
         else:
             self.last_error = detail
             print(f"[voice] delivery FAILED: {detail}", flush=True)
-        self.state = "listening"
+        self.end_turn()
 
     # -- lifecycle ------------------------------------------------------
     def start(self) -> bool:
@@ -373,7 +397,10 @@ def main(argv=None) -> int:
             svc.speaker.say(pending)
 
         if svc.state == "speaking" and not svc.speaker.busy:
-            svc.state = "listening"
+            # The reply just came out of a speaker next to the microphone.
+            # Everything ALSA buffered during it is our own voice, and it must
+            # not become the next turn's pre-roll.
+            svc.end_turn()
 
         svc.publish()
 

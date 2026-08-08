@@ -181,6 +181,38 @@ ends on the FIRST of:
 `status.json` publishes `capturing_s` while a turn is in progress, so how long
 the mic has actually been recording is answerable from outside at any moment.
 
+### One wake, one utterance
+
+There is **no follow-up window.** Once Hermes has answered, the turn is closed
+and the wake word is required again. That is deliberate: a window where it
+keeps listening for more is common in assistants and is exactly what makes
+people unsure whether the microphone is still on.
+
+Closing a turn does three things together, and all three matter:
+
+1. **Resets the detector** — otherwise the same utterance keeps scoring above
+   threshold and fires again immediately.
+2. **Empties the pre-roll ring** so nothing from this turn leaks into the next.
+3. **Discards everything ALSA buffered while the service was busy.** This is
+   the one that is easy to miss. Between the end of a capture and the return to
+   listening the service is transcribing, posting and possibly speaking, and it
+   is not reading frames through any of it — so the driver quietly buffers the
+   lot. Without draining, the next wake's pre-roll begins with whatever was
+   said while Hermes was answering, **including its own reply out of the
+   speaker**, presented as if it had just been spoken.
+
+The journal says how much was thrown away, which is a direct measure of how
+long the microphone went unattended:
+
+```
+[voice] turn closed; discarded 4.3s captured while busy -- say the wake word again
+```
+
+`tests/test_voice.py` pins that every exit from a turn goes through the same
+door — nothing captured, empty transcript, rate limited, delivered, and
+finishing speaking. A path that skipped it would leave the detector primed and
+the buffer filling.
+
 ### Two bugs that made captures run long
 
 Both were real and both are pinned by `tests/test_voice.py`, verified to fail
