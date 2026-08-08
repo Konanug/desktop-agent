@@ -45,6 +45,7 @@ unit is dead.
 │   ├── protocol.py       the tmpfs contract shared with the plugin
 │   ├── stream.py         live MJPEG + /events SSE — TRUST BOUNDARY (token)
 │   ├── hands.py          MediaPipe hand/finger tracking — OBSERVATION ONLY
+│   ├── custom.py         user-trained gestures: normalise + k-NN that abstains
 │   ├── gestures.py       level → debounced EDGE; publishes, never acts
 │   └── __main__.py       lazy lifecycle, request serving, ring buffer, stream
 ├── display/              the renderer (systemd user service)
@@ -58,10 +59,13 @@ unit is dead.
 ├── hermes_ext/           installed INTO ~/.hermes via scripts/install-hermes-ext.sh
 │   ├── hooks/hermes-display-state/   in-process; publishes agent state
 │   ├── plugins/hermes_display/       display_show_image/_text/_clear — TRUST BOUNDARY
-│   └── plugins/hermes_camera/        camera_look/_watch — hands the model real pixels
+│   ├── plugins/hermes_camera/        camera_look/_watch — hands the model real pixels
+│   ├── plugins/hermes_voice/         speak — the reply, out loud
+│   └── plugins/hermes_google/        gmail/calendar, READ-ONLY scopes
 ├── tools/
 │   ├── render_frames.py  generates the visual → assets/anim/*.pack
-│   ├── bench_spi.py      ⚠ DEAD — measured the SPI panel, removed 2026-08-06
+│   ├── gesture_train.py  record YOUR hand signs → custom_gestures.json
+│   ├── gesture_calibrate.py  live pinch/reach readout for thresholds
 │   ├── claude_usage.py   rolling 5h Claude token usage → usage.json
 │   └── camera_probe.py   verifies the camera is LIVE and measures its rate
 ├── scripts/
@@ -121,8 +125,8 @@ Verify with `sudo sshd -T`, never by reading the file.
 kept because the *reasoning* recurs and because much of the code still carries
 its shape, but do not treat their numbers as current. **There is no bus budget
 any more**: the framebuffer is memory a display controller scans out on its
-own, so writes cost a memcpy and nothing else. `tools/bench_spi.py` measures a
-device that is gone.
+own, so writes cost a memcpy and nothing else. `tools/bench_spi.py` has been
+deleted along with the panel it measured.
 
 Original: fbtft was ROW-granular, not rectangle-granular. A 240×240 blit
 transmitted the full 480-wide rows — measured 228.8 KiB, same as 480×240 (ratio
@@ -133,7 +137,7 @@ leave a remainder at the wrap and the rings visibly snap back a few degrees,
 once per loop, forever. `tests/test_anim_seam.py` catches it.
 
 **4. HISTORICAL (see 2). Timing framebuffer writes measured memcpy, not SPI.**
-fbtft deferred I/O to a workqueue. `tools/bench_spi.py` read the kernel's own
+fbtft deferred I/O to a workqueue; the old bench read the kernel's own
 `bytes_tx` counter. On HDMI a memcpy is now genuinely all there is, so timing
 the write IS the honest measurement — the opposite of what this trap warned.
 

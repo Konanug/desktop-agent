@@ -284,6 +284,75 @@ def test_overlay_is_isolated_even_when_no_resize_happens():
         "overlay leaked into the source frame when no resize intervened"
 
 
+# -- custom, user-trained gestures ---------------------------------------
+def test_custom_normalisation_removes_position_rotation_and_scale():
+    """What a learned sample IS. If this is not exact, every recorded sample
+    encodes where the hand happened to be as well as its shape, and the
+    classifier learns the room instead of the gesture."""
+    import numpy as np
+    from camera.custom import normalise
+    rng = np.random.default_rng(0)
+    base = rng.random((21, 2))
+    th = 0.7
+    R = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+    moved = (base - base[0]) @ R.T * 2.3 + np.array([0.4, 0.2])
+    assert np.linalg.norm(normalise(base) - normalise(moved)) < 1e-9, \
+        "same pose, moved/rotated/scaled, did not normalise to the same vector"
+    # And it must still tell different shapes apart.
+    assert np.linalg.norm(normalise(base) - normalise(rng.random((21, 2)))) > 1.0
+
+
+def test_custom_normalisation_puts_the_hand_in_a_canonical_frame():
+    """The invariants the basis projection is supposed to produce. The first
+    version used atan2 plus a rotation matrix, looked entirely reasonable, and
+    put the middle knuckle at (-0.75, -0.66) instead of (0, 1)."""
+    import numpy as np
+    from camera.custom import normalise
+    out = normalise(np.random.default_rng(1).random((21, 2))).reshape(21, 2)
+    assert np.allclose(out[0], [0, 0], atol=1e-9), "wrist not at the origin"
+    assert np.allclose(out[9], [0, 1], atol=1e-9), "hand not pointing up at unit scale"
+
+
+def test_custom_classifier_can_say_it_does_not_know():
+    """THE PROPERTY THAT MATTERS. A softmax always names a class; this project
+    was already bitten once by a classifier that could not abstain."""
+    import numpy as np
+    from camera.custom import CustomGestures, normalise
+    g = CustomGestures.__new__(CustomGestures)
+    rng = np.random.default_rng(2)
+    proto = rng.random((21, 2))
+    g._X = np.array([normalise(proto + rng.normal(0, 0.002, (21, 2)))
+                     for _ in range(10)])
+    g._y = ["OK"] * 10
+    g.names, g.error = ["OK"], None
+    name, _ = g.classify(proto)
+    assert name == "OK", "did not recognise the pose it was trained on"
+    far, _ = g.classify(rng.random((21, 2)))
+    assert far is None, "named a gesture for a hand it has never seen"
+
+
+def test_built_in_gestures_are_not_shadowed_by_learned_ones():
+    """A learned gesture that resembles FIST must not silently take it over --
+    bindings that already work would start doing something else with no
+    visible cause."""
+    import camera.hands as H
+    lm = FIXTURES[("victory_rot0", "PEACE")]
+
+    class _Always:
+        names = ["ANYTHING"]
+        def classify(self, lm, ar=1.0):
+            return "ANYTHING", 0.0
+    prev = H._CUSTOM
+    try:
+        H._CUSTOM = _Always()
+        assert classify(fingers_extended(lm), lm, 960 / 540) == "PEACE", \
+            "a learned gesture shadowed a built-in"
+        # ... but it DOES fill the gap where the table says nothing.
+        assert classify((0, 1, 0, 1, 0), lm, 960 / 540) == "ANYTHING"
+    finally:
+        H._CUSTOM = prev
+
+
 def _run() -> int:
     fails = 0
     for name, fn in sorted(globals().items()):

@@ -1,0 +1,5 @@
+name: hermes_google
+version: 1.0.0
+description: Read-only Gmail and Google Calendar access.
+author: hermes-pi
+entry_point: __init__.py

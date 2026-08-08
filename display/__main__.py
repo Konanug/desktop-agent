@@ -231,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                 _clear_body(fb, renderer)
                 renderer.invalidate()
 
+            listening = False
             if resolved.screen in (Screen.IMAGE, Screen.TEXT_CARD):
                 body_owned = True
                 if req_changed or last_screen != resolved.screen:
@@ -244,6 +245,24 @@ def main(argv: list[str] | None = None) -> int:
                 pack_name = None
             else:
                 pack_name = _PACK_FOR.get(resolved.screen) if animate else None
+                # THE BODY SAYS "I AM HEARING YOU", not the header.
+                #
+                # The header used to switch from "MIC" to "MIC ((" while
+                # capturing. That put a flickering label in the corner exactly
+                # when the person should be looking at the thing they are
+                # talking to, and made a steady fact -- the microphone is open
+                # -- look like it was toggling. The signal belongs in the
+                # body, which is large, calm, and already where attention is.
+                #
+                # Only when Hermes has nothing more important to show. If it
+                # is THINKING or running a tool, that outranks this: the panel
+                # reports the most significant true thing, not the most recent.
+                # `mic_busy` is OBSERVED from the voice service's status file,
+                # so this is not the panel inventing a state.
+                if (animate and resolved.screen == Screen.IDLE
+                        and getattr(health, "mic_busy", False)):
+                    pack_name = "receiving"
+                    listening = True
             if pack_name:
                 if chrome_due:
                     renderer.draw_chrome(resolved, state, health, now, usage)
@@ -265,7 +284,8 @@ def main(argv: list[str] | None = None) -> int:
                         top = min(oy + pk.h + 2, renderer.footer.y - 18)
                         renderer.draw_label_strip(
                             resolved, top=top,
-                            height=max(16, renderer.footer.y - top))
+                            height=max(16, renderer.footer.y - top),
+                            override="LISTENING" if listening else None)
             elif chrome_due and not body_owned:
                 renderer.draw(resolved, state, health, now, usage)
 

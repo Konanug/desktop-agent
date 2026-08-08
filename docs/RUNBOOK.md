@@ -285,7 +285,7 @@ sudo systemctl restart hermes-fbcon-detach
 
 The panel is an **HDMI** screen as of 2026-08-06 (it was an ILI9486 SPI TFT
 before). The SPI diagnostics that used to live here are gone with it —
-`tools/bench_spi.py` measures a device that is no longer attached.
+`tools/bench_spi.py` was deleted with the panel it measured.
 
 ```bash
 # Is the screen even detected? EDID is 0 bytes on this panel -- that is normal.
@@ -443,7 +443,9 @@ Only `display/panel.py` is hardware-specific. For a different SPI TFT:
 2. `python3 -c "import sys;sys.path.insert(0,'.');from display.panel import discover;print(discover())"`
 3. If it is not 16 bpp, extend `pack_rgb565()`
 4. Set `WIDTH`/`HEIGHT` in `tools/render_frames.py` to the new geometry, regenerate
-5. `python3 tools/bench_spi.py` to find the new fps ceiling; set pack `fps` to match
+5. Check the pixel aspect: capture `/dev/fb0` and compare a drawn circle's
+   width to its height on the glass. `HERMES_PIXEL_ASPECT` in
+   `tools/render_frames.py` pre-compensates a panel that scales non-uniformly
 
 Geometry is read from sysfs at runtime, so the renderer adapts to resolution
 changes on its own.

@@ -181,7 +181,15 @@ class Service:
         # Nothing on this Pi acts on them and nothing here can reach Hermes --
         # see camera/gestures.py and docs/GESTURES.md for why that line is
         # where it is.
-        self.gate = gestures.GestureGate(vocabulary=hands.vocabulary())
+        # Learned gestures, if the owner has trained any. Loaded before the
+        # vocabulary so they are part of it.
+        custom = hands.load_custom()
+        vocab = hands.vocabulary()
+        if custom is not None:
+            vocab |= set(custom.names)
+            print(f"[camera] custom gestures: {', '.join(custom.names)}",
+                  flush=True)
+        self.gate = gestures.GestureGate(vocabulary=vocab)
         self.gestures_enabled = os.environ.get(
             "HERMES_CAMERA_GESTURES", "on").lower() not in ("off", "0", "no")
         self._last_gesture_at = 0.0

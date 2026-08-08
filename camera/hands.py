@@ -219,6 +219,21 @@ PINCH_MAX = float(os.environ.get("HERMES_PINCH_MAX", "0.45"))
 PINCH_MIN_REACH = float(os.environ.get("HERMES_PINCH_MIN_REACH", "1.10"))
 
 
+# Learned gestures, loaded once. None until load_custom() is called, so the
+# feature costs nothing at all when nothing has been trained.
+_CUSTOM = None
+
+
+def load_custom():
+    """Load user-trained gestures, if any. Never fatal."""
+    global _CUSTOM
+    from .custom import CustomGestures
+    g = CustomGestures()
+    g.load()
+    _CUSTOM = g if g.available else None
+    return _CUSTOM
+
+
 def classify(fingers, lm=None, ar: float = 1.0) -> str | None:
     """A name from the CLOSED vocabulary, or None. Never a guess.
 
@@ -232,7 +247,17 @@ def classify(fingers, lm=None, ar: float = 1.0) -> str | None:
         if (pinch_ratio(lm, ar) < PINCH_MAX
                 and index_reach(lm, ar) >= PINCH_MIN_REACH):
             return "PINCH"
-    return _GESTURES.get(tuple(int(b) for b in fingers))
+
+    built_in = _GESTURES.get(tuple(int(b) for b in fingers))
+    if built_in is not None or lm is None or _CUSTOM is None:
+        # BUILT-INS WIN. A learned gesture that happens to look like FIST must
+        # not silently shadow it -- existing bindings on the laptop would start
+        # doing something else with no visible cause. Learned gestures fill the
+        # gap where the finger table says nothing, which is exactly the space
+        # they were recorded in.
+        return built_in
+    name, _dist = _CUSTOM.classify(lm, ar)
+    return name
 
 
 def vocabulary() -> set[str]:

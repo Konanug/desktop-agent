@@ -404,3 +404,70 @@ on both.
 than detection); does the browser page's LAST EDGE line update when you make a
 shape. That page shows the same feed a client subscribes to, so it answers "is
 it the Pi or is it my client" without running a client.
+
+---
+
+## Custom gestures — teach it your own signs
+
+```bash
+python3 tools/gesture_train.py --record OK --seconds 8
+python3 tools/gesture_train.py --record SPOCK --seconds 8
+python3 tools/gesture_train.py --check       # honest held-out accuracy
+python3 tools/gesture_train.py --list
+systemctl --user restart hermes-camera
+```
+
+Hold the pose and **move it around** while recording — nearer, further,
+rotated, both hands, slightly sloppy. Position, rotation and distance are
+removed by construction, so those variations cost nothing; what you are
+collecting is the range of shapes *you* make when you mean that sign.
+
+### Why landmarks and not training images
+
+"Give it training images" reads as fine-tuning a vision model on photographs.
+That is the wrong tool here and would be worse at the job:
+
+- **MediaPipe has already solved the hard part.** It turns a photograph into 21
+  calibrated points, trained on far more hands than anyone can photograph in a
+  kitchen. Learning from raw pixels throws that away and starts again from
+  lighting, skin tone, sleeve colour and background.
+- **Landmarks are invariant to exactly what ruins image models.** Normalised
+  into the hand's own frame, the same pose gives the same numbers at any
+  distance, any rotation, in any light.
+- **It stays inspectable.** A few hundred samples and a k-NN is a JSON file you
+  can read, trains in under a second, and can be deleted and redone in a
+  minute. A fine-tune is an opaque blob you will not retrain casually.
+
+### What a sample is
+
+21 landmarks, normalised so only SHAPE survives: wrist to the origin, frame
+aspect corrected, rotated so wrist→middle-knuckle points up, scaled so that
+vector is length 1. What is left is 42 numbers describing a hand shape and
+nothing else.
+
+The rotation is done by **projecting onto the hand's own basis**, not by an
+angle and a rotation matrix. Building the basis directly is self-evidently
+correct; an `atan2` plus a matrix has four sign conventions to get wrong and
+looks plausible when it is. The first version here was wrong in exactly that
+way — it normalised the middle knuckle to `(-0.75, -0.66)` instead of `(0, 1)`,
+and `tests/test_hands.py` now asserts both invariants.
+
+### The classifier can say "I don't know"
+
+k-NN with a distance ceiling, needing 3 of 5 neighbours to agree. Deliberately
+the simplest thing that works, for one reason that outranks accuracy: **a
+softmax over N classes always names one of them.** This project has been bitten
+by that once already — `classify()` used to name every finger pattern, so a
+hand in view permanently asserted a command. Anything past `HERMES_CUSTOM_REJECT`
+is `None`, and `None` means no gesture.
+
+`--check` reports held-out accuracy split three ways, and **WRONG is the number
+that matters** — not accuracy. A rejected gesture costs you a repeat; a wrong
+one runs something you did not ask for, and anyone in the room can trigger it.
+
+### Built-ins always win
+
+A learned gesture that happens to resemble `FIST` does **not** shadow it —
+bindings that already work would start doing something else with no visible
+cause. Learned gestures fill the gap where the finger table says nothing, which
+is the space they were recorded in anyway.

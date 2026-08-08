@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,6 +57,20 @@ import numpy as np
 #   header 39  ->  band starts at 42 (3px gap)
 #   footer at 435, label strip 33 tall, 2px gap  ->  band ends at 400
 PANEL_W, PANEL_H = 800, 480
+
+# PIXELS ON THIS PANEL ARE NOT SQUARE, and the visual has to know.
+#
+# The framebuffer is 800x480 (1.667) but the physical Waveshare panel is
+# 480x320 (1.500) and scales what it is sent to fit. That scale is NOT uniform:
+# it squeezes horizontally by 1.500/1.667, so anything drawn round in pixel
+# space arrives 1.111x TALL. Confirmed by capturing /dev/fb0 -- the rings are
+# perfectly circular in the framebuffer and elliptical on the glass, which
+# rules out the renderer and points at the panel.
+#
+# So the grid below is pre-stretched horizontally by exactly that factor: the
+# frame leaves here slightly wide and the panel's own squash makes it round.
+# Set to 1.0 for a panel whose pixels really are square.
+PIXEL_ASPECT = float(os.environ.get("HERMES_PIXEL_ASPECT", "1.1111"))
 WIDTH = 800         # full panel width
 HEIGHT = 358        # band height, sized to leave room for the label strip
 ORIGIN_Y = 42       # directly under the scaled 39px header
@@ -104,13 +119,18 @@ RED = Style(core=(1.00, 0.25, 0.25), ring=(0.80, 0.15, 0.15), mesh=(0.45, 0.10, 
 VIOLET = Style(core=(0.78, 0.35, 1.00), ring=(0.60, 0.25, 0.85), mesh=(0.35, 0.15, 0.50))
 
 
-def _radial_grid(w: int, h: int, diam: float) -> tuple[np.ndarray, np.ndarray]:
+def _radial_grid(w: int, h: int, diam: float,
+                 pixel_aspect: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
     """Radius (1.0 at the visual's edge) and angle, over a w x h frame.
 
-    Non-square aware: both axes are scaled by the same `diam` so the visual
-    stays circular on a wide frame instead of stretching into an ellipse.
+    Non-square aware in TWO senses. The frame may be wider than it is tall --
+    both axes divide by the same `diam`, so the visual stays circular rather
+    than stretching to fill. And the PIXELS themselves may not be square, which
+    is a different problem the first correction does not touch: see
+    PIXEL_ASPECT. Dividing x by a larger number makes the drawn shape wider in
+    pixels, which is what cancels the panel's squash.
     """
-    gx = (np.arange(w) - (w - 1) / 2.0) / (diam / 2.0)
+    gx = (np.arange(w) - (w - 1) / 2.0) / (diam / 2.0 * pixel_aspect)
     gy = (np.arange(h) - (h - 1) / 2.0) / (diam / 2.0)
     yy, xx = np.meshgrid(gy, gx, indexing="ij")
     return np.hypot(xx, yy), np.arctan2(yy, xx)
@@ -122,14 +142,15 @@ def _ring(r: np.ndarray, radius: float, width: float) -> np.ndarray:
     return np.exp(-((r - radius) ** 2) / (2 * width * width))
 
 
-def render_frame(style: Style, u: float, w: int, h: int, diam: float) -> np.ndarray:
+def render_frame(style: Style, u: float, w: int, h: int, diam: float,
+                 pixel_aspect: float = 1.0) -> np.ndarray:
     """One frame at loop position u in [0,1). Returns (h, w, 3) float 0..1.
 
     u is the fraction THROUGH THE LOOP, not an absolute time. Every term below
     multiplies u by an integer cycle count and 2*pi, so u=1 reproduces u=0
     exactly and the wrap is invisible.
     """
-    r, a = _radial_grid(w, h, diam)
+    r, a = _radial_grid(w, h, diam, pixel_aspect)
     acc = np.zeros((h, w, 3), np.float32)
     TAU = 2 * math.pi
 
@@ -180,7 +201,7 @@ def render_frame(style: Style, u: float, w: int, h: int, diam: float) -> np.ndar
 
 
 def render_pack(style: Style, frames: int, w: int = WIDTH, h: int = HEIGHT,
-                diam: int = DIAM) -> np.ndarray:
+                diam: int = DIAM, pixel_aspect: float = PIXEL_ASPECT) -> np.ndarray:
     """Render `frames` frames as (frames, h, w, 3) uint8, seamlessly looping.
 
     u = f/frames spans [0,1), so with integer cycle counts frame `frames`
@@ -189,7 +210,8 @@ def render_pack(style: Style, frames: int, w: int = WIDTH, h: int = HEIGHT,
     S = SUPERSAMPLE
     out = np.zeros((frames, h, w, 3), np.uint8)
     for f in range(frames):
-        img = render_frame(style, f / frames, w * S, h * S, diam * S)
+        img = render_frame(style, f / frames, w * S, h * S, diam * S,
+                           pixel_aspect)
         img = img.reshape(h, S, w, S, 3).mean(axis=(1, 3))   # box-filter 2x -> 1x
         out[f] = (img * 255).astype(np.uint8)
     return out
@@ -289,6 +311,8 @@ def main() -> int:
     ap.add_argument("--diam", type=int, default=DIAM)
     ap.add_argument("--panel-width", type=int, default=PANEL_W)
     ap.add_argument("--origin-y", type=int, default=ORIGIN_Y)
+    ap.add_argument("--pixel-aspect", type=float, default=PIXEL_ASPECT,
+                    help="panel pixel aspect; 1.0 for square pixels")
     ap.add_argument("--only", help="render just this pack")
     args = ap.parse_args()
 
@@ -303,7 +327,8 @@ def main() -> int:
     for name, (style, frames, fps, loop) in PACKS.items():
         if args.only and name != args.only:
             continue
-        arr = render_pack(style, frames, args.width, args.height, args.diam)
+        arr = render_pack(style, frames, args.width, args.height, args.diam,
+                          args.pixel_aspect)
         size = write_pack(out, name, arr, fps, loop, origin)
         total += size
         print(f"  {name:13s} {frames:3d} frames @ {fps:2d}fps  {size/1024:7.1f} KiB")

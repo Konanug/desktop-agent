@@ -187,15 +187,21 @@ class Renderer:
 
         # Microphone tally, same rule and the same inverted fail direction:
         # never say the mic is off unless that was positively observed.
-        # MIC     listening for the wake word
-        # MIC ((  actively capturing or transcribing a turn -- a stronger
-        #         state that deserves to look different, because that is when
-        #         words are being recorded rather than merely heard
+        # MIC     the microphone is open
         # MIC?    could not tell
+        #
+        # THE TEXT DOES NOT CHANGE WHILE YOU TALK. It briefly read "MIC ((" and
+        # that was a mistake: a label that rewrites itself mid-sentence draws
+        # the eye to the header exactly when the person should be looking at
+        # the thing they are talking to, and it makes a steady fact -- the
+        # microphone is on -- look like it is flickering between two states.
+        # "Is it capturing" is now said by the BODY instead (the visual switches
+        # to its listening animation), which is where attention already is and
+        # is a far larger, calmer signal. The header stays a constant.
         if mic_on is not False:
             on = mic_on is True
             col = RED if on else AMBER
-            label = ("MIC ((" if (on and mic_busy) else "MIC" if on else "MIC?")
+            label = "MIC" if on else "MIC?"
             d.ellipse((x, s(12), x + s(9), s(21)), fill=col)
             d.text((x + s(14), s(8)), label, font=self.f_tiny, fill=col)
 
@@ -209,10 +215,20 @@ class Renderer:
         else:
             stamp, date, col = "--:--", "no time sync", GREY
 
-        tw = d.textbbox((0, 0), stamp, font=self.f_mid)[2]
-        d.text((self.w - tw - s(10), s(6)), stamp, font=self.f_mid, fill=col)
-        dw = d.textbbox((0, 0), date, font=self.f_tiny)[2]
-        d.text((self.w - dw - s(10), s(20)), date, font=self.f_tiny, fill=GREY)
+        # STACKED FROM MEASURED HEIGHTS, not from two guessed offsets. At the
+        # 480x320 reference the clock happened to fit above the date; scaled
+        # 1.5x to this panel it grew past it and the two overlapped into an
+        # unreadable smear -- visible in a /dev/fb0 capture, invisible in any
+        # test, because nothing here asserts that glyphs do not collide.
+        cb = d.textbbox((0, 0), stamp, font=self.f_mid)
+        db = d.textbbox((0, 0), date, font=self.f_tiny)
+        clock_h = cb[3] - cb[1]
+        block_h = clock_h + s(2) + (db[3] - db[1])
+        top = max(0, (self.header.h - block_h) // 2) - cb[1]
+        d.text((self.w - (cb[2] - cb[0]) - s(10), top), stamp,
+               font=self.f_mid, fill=col)
+        d.text((self.w - (db[2] - db[0]) - s(10), top + cb[1] + clock_h + s(2)),
+               date, font=self.f_tiny, fill=GREY)
 
         d.line((0, self.header.h - 1, self.w, self.header.h - 1), fill=DIM)
         return self._flush(self.header, img)
@@ -237,7 +253,8 @@ class Renderer:
                          self.f_small, GREY, self.w)
         return self._flush(self.body, img)
 
-    def draw_label_strip(self, r: Resolved, top: int, height: int) -> int:
+    def draw_label_strip(self, r: Resolved, top: int, height: int,
+                         override: str | None = None) -> int:
         """State label beneath the animation.
 
         A separate zone with its own hash, so a spinning animation does not
@@ -249,7 +266,16 @@ class Renderer:
         img = Image.new("RGB", (self.w, height), BLACK)
         d = ImageDraw.Draw(img)
         label, accent = _LABEL.get(r.screen, (r.screen.value.upper(), CYAN))
-        sub = self._subtitle(r)
+        if override:
+            # An OBSERVED condition worth saying plainly, and only ever passed
+            # when nothing more significant is true -- see the caller. It goes
+            # here rather than in the header because a label that rewrites
+            # itself in the corner reads as a fault; in the body it reads as
+            # the machine paying attention.
+            label, accent = override, CYAN
+            sub = ""
+        else:
+            sub = self._subtitle(r)
         text = f"{label}   {sub[:30]}" if sub else label
         self._centre(d, max(0, (height - self._s(15)) // 2), text,
                      self.f_small, accent, self.w)
