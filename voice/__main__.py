@@ -240,7 +240,10 @@ class Service:
         self.wake.reset()
         self.pre.frames.clear()
         dropped = self.rec.drain()
-        self.floor = listen.NoiseFloor()      # the room may have changed
+        # The floor is NOT reset here. The room is the same room, and clearing
+        # it means the next estimate gets rebuilt from whatever happens to
+        # precede the next wake -- which is the wake word itself. That is
+        # exactly how the threshold reached 3501 in a room measuring 250.
         if dropped > 0.2:
             print(f"[voice] turn closed; discarded {dropped:.1f}s captured "
                   f"while busy -- say the wake word again", flush=True)
@@ -255,7 +258,13 @@ class Service:
         print(f"[voice] wake ({self.wake.score:.2f}) -- listening", flush=True)
         audio = self.capture_utterance()
         if audio is None:
-            print("[voice] nothing usable captured", flush=True)
+            # WITH THE NUMBERS. "nothing usable captured" on its own gives no
+            # way to tell a silent room from a threshold set too high, and
+            # those need opposite fixes.
+            th = self.ends.threshold if self.ends else 0.0
+            print(f"[voice] nothing usable captured "
+                  f"(speech needed >{th:.0f}, room {self.floor.value():.0f}, "
+                  f"loudest heard {self.level_peak:.0f})", flush=True)
             self.end_turn()
             return
 

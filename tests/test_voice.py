@@ -403,6 +403,51 @@ def test_every_exit_from_a_turn_closes_it():
     assert src.count("self.end_turn()") >= 4, "not every exit closes the turn"
 
 
+def test_the_wake_word_does_not_poison_the_noise_floor():
+    """THE REGRESSION. The window immediately before a wake is the one window
+    guaranteed to contain speech -- the wake word itself. With a median, the
+    floor was rebuilt almost entirely from "hey jarvis" and the threshold
+    reached 3501 in a room measuring 250, so the question that followed could
+    not clear it. Symptom: works the first time, then "nothing usable
+    captured" forever."""
+    from voice import listen
+    import numpy as np
+    rng = np.random.default_rng(0)
+    nf = listen.NoiseFloor()
+    # The ratio that actually occurred: end_turn had CLEARED the estimate, so
+    # by the time the next wake fired the window held only a little room noise
+    # and a lot of wake word. A median over that IS the wake word.
+    for _ in range(6):                        # a little quiet room
+        nf.push((rng.standard_normal(1280) * 250).astype(np.int16))
+    for _ in range(14):                       # someone says the wake word
+        nf.push((rng.standard_normal(1280) * 3000).astype(np.int16))
+    e = listen.Endpointer(1.0)
+    e.set_floor(nf.value())
+    assert e.threshold < 1000, \
+        f"the wake word dragged the threshold to {e.threshold:.0f}"
+    # And it must still be above the room, or every rustle is speech.
+    assert e.threshold > 250
+
+
+def test_the_threshold_has_a_ceiling():
+    """A polluted floor estimate makes the endpointer DEAF, and a deaf
+    endpointer fails silently -- the wake fires and nothing registers."""
+    from voice import listen
+    e = listen.Endpointer(1.0)
+    e.set_floor(50_000.0)                     # absurd, e.g. sustained noise
+    assert e.threshold <= 1200, f"no ceiling: {e.threshold}"
+
+
+def test_the_floor_survives_a_turn():
+    """end_turn() used to clear it, so the next estimate was rebuilt from
+    whatever preceded the next wake -- which is the wake word."""
+    import inspect
+    from voice import __main__ as m
+    body = inspect.getsource(m.Service.end_turn)
+    assert "NoiseFloor()" not in body, \
+        "end_turn throws away the floor estimate again"
+
+
 def _run() -> int:
     fails = 0
     for name, fn in sorted(globals().items()):

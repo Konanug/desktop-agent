@@ -215,9 +215,13 @@ class NoiseFloor:
     the floor up and make the endpointer progressively deafer exactly when it
     needs to be sharp.
 
-    The median is doing real work. A mean would be pulled up by the occasional
-    door or cough; the median of a few seconds of a mostly-quiet room is the
-    room.
+    A LOW PERCENTILE, NOT THE MEDIAN. The median assumes the window is mostly
+    quiet, and the one window that is guaranteed NOT to be is the one right
+    before a wake -- it contains the wake word. Measured in the field: the
+    threshold reached 3501 against a room of 250, because the estimate had been
+    rebuilt almost entirely from someone saying "hey jarvis", and the question
+    that followed could not clear it. The quietest fifth of the last few
+    seconds is the room even when part of that window is speech.
     """
 
     def __init__(self, seconds: float = 6.0):
@@ -230,7 +234,8 @@ class NoiseFloor:
     def value(self, fallback: float = 0.0) -> float:
         if len(self._vals) < 4:
             return fallback
-        return float(np.median(np.fromiter(self._vals, dtype=np.float32)))
+        return float(np.percentile(
+            np.fromiter(self._vals, dtype=np.float32), 20))
 
 
 class Endpointer:
@@ -252,8 +257,14 @@ class Endpointer:
         """Recomputed from the room JUST BEFORE each capture, not at startup."""
         self.floor = floor
         # 3x the measured noise floor, with an absolute minimum so a silent
-        # room (floor near 0) does not make every rustle count as speech.
-        self.threshold = max(floor * 3.0, 120.0)
+        # room (floor near 0) does not make every rustle count as speech --
+        # and an absolute CEILING, because a floor estimate that has been
+        # polluted by speech makes the endpointer deaf, and a deaf endpointer
+        # fails silently: the wake fires, nothing registers, and the only
+        # symptom is "nothing usable captured". Observed at 3501 in a room
+        # measuring 250. Normal speech close to this mic sits well above 1200,
+        # so this ceiling cannot mask a real utterance.
+        self.threshold = min(max(floor * 3.0, 120.0), 1200.0)
 
     def is_speech(self, frame: np.ndarray) -> bool:
         return _rms(frame) > self.threshold
