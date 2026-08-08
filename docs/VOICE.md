@@ -257,6 +257,42 @@ the HAT's button** (GPIO 17, free and verified readable). That drops the wake
 word — a physical press replaces it — and the mic stays closed at rest. Not
 built; it is a real option if the always-open stream is not acceptable.
 
+## The reply comes back two ways
+
+Every voice turn produces both, and they are deliberately different lengths:
+
+| | |
+|---|---|
+| **Spoken** | one or two sentences, out of the ReSpeaker, via the `speak` tool |
+| **Written** | the full answer to Discord, opening with 🎤 "*what it heard*" |
+
+The route prompt instructs the agent to call `speak` **every time, including on
+errors** — an assistant that goes silent is indistinguishable from a broken
+one. It is also told to keep the spoken part short even when the written one is
+long: nobody wants ten emails read aloud, so it says how many and offers.
+
+### Three things fail separately, so all three are logged
+
+The agent calling `speak`, the file being written, and a sound actually leaving
+the HAT are independent. "Hermes went quiet" needs to distinguish them:
+
+```
+# did the agent decide to speak?
+grep "tool speak" ~/.hermes/logs/agent.log
+
+# did the service play it?
+journalctl --user -u hermes-voice | grep -E "speaking|SPEAK FAILED"
+```
+
+Length only, never content — the same rule as the transcript.
+
+### It does not hear itself
+
+Wake detection is skipped while `speaker.busy`, and everything ALSA buffered
+during playback is discarded when the turn closes. Piper through a speaker
+beside the microphone is far louder to that mic than a person is, so without
+both it would reliably answer itself.
+
 ## Setup
 
 ```bash

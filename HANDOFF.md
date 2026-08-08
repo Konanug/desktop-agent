@@ -152,8 +152,11 @@ that is better here rather than a shortcut.
 - **The circle.** I corrected it from a framebuffer capture and arithmetic, and
   I cannot see your screen. If it now looks too *wide*, the panel is not
   480×320 — set `HERMES_PIXEL_ASPECT=1.0` and re-run `tools/render_frames.py`.
-- **The speaker.** Still nothing plugged in, so TTS has never been heard.
-  `~/.local/share/hermes-pi/voice-venv/bin/python -m voice --say "testing"`.
+- **Whether the speaker is audible.** A speaker is now connected and the whole
+  chain runs clean — agent → `speak` → `speak.txt` → piper → HAT, all verified
+  in the logs — but I cannot hear it, so "it played without error" is not the
+  same as "you heard it". If it is silent, say which connector you used: the
+  3.5 mm jack and the JST header are separate outputs.
 
 ## Still outstanding from before
 

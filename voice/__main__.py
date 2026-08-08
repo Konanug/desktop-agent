@@ -403,7 +403,15 @@ def main(argv=None) -> int:
         if pending and not svc.speaker.busy:
             svc.state = "speaking"
             svc.publish(force=True)
-            svc.speaker.say(pending)
+            ok = svc.speaker.say(pending)
+            # LENGTH, NOT CONTENT -- same rule as the transcript. But the fact
+            # that speech happened at all has to be visible, or "Hermes went
+            # quiet" has no next step: the agent calling speak, the file being
+            # written, and a sound actually leaving the HAT are three separate
+            # things that fail separately.
+            print(f"[voice] speaking {len(pending)} chars"
+                  if ok else
+                  f"[voice] SPEAK FAILED ({svc.speaker.error})", flush=True)
 
         if svc.state == "speaking" and not svc.speaker.busy:
             # The reply just came out of a speaker next to the microphone.
