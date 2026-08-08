@@ -610,3 +610,4 @@ without being asked. What was learned and is worth keeping:
 | `docs/CAMERA-CONTRACT.md` | the tmpfs interface between camera service and plugin |
 | `docs/GESTURES.md` | edges, the `/events` wire, and the Windows client |
 | `docs/VOICE.md` | wake word, STT, the narrowed webhook lane, the mic light |
+| `docs/GOOGLE.md` | Gmail/Calendar, read-only scopes, the typed-consent rule |

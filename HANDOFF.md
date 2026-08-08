@@ -44,7 +44,44 @@ exactly this.
 
 ---
 
-## Needs you — Gmail + Calendar (about 5 minutes)
+## ✅ Gmail + Calendar — CONNECTED and verified
+
+Tested against your real account: unread count, calendar agenda and search all
+return live data. Scopes granted are `gmail.readonly` + `calendar.readonly`
+only, token stored `0600`.
+
+### Your email rule is enforced
+
+> Never send an email without direct permission — typed, never spoken, specific
+> phrase, correct syntax.
+
+**Today sending is impossible, not merely disallowed.** Proven, not assumed:
+
+```
+send REFUSED by Google: HTTP 403  "Request had insufficient authentication scopes"
+```
+
+No send tool exists either, and `tests/test_send_consent.py` asserts both — so
+adding one by accident fails the suite.
+
+If send is ever wanted, three layers already enforce your rule:
+
+1. **Scope** — a readonly token cannot send. Adding it needs a new Google
+   consent screen, itself a typed act by you.
+2. **Structure** — a send tool must live in a toolset absent from
+   `platform_toolsets.webhook`, so **the voice lane cannot see it**. This is
+   what makes "typed, not spoken" real: a tool handler *cannot* tell which
+   platform called it, so a runtime check would be a guess. There is nothing to
+   refuse because there is nothing to call.
+3. **Phrase** — exact syntax `CONFIRM SEND TO <recipient> <your phrase>`, with
+   the phrase in `~/.config/hermes-pi/send-consent-phrase`. **Missing file =
+   nothing can ever be sent.** The recipient is part of the phrase so consent
+   authorises one delivery to one person and cannot be reused.
+
+**Optional, only if you ever want send:** create the phrase file. Until then
+nothing can send regardless.
+
+## ~~Needs you — Gmail + Calendar~~ (done)
 
 Everything is built and loaded; only the OAuth consent is missing, and only you
 can give it. The tools currently answer *"Google account is not connected yet"*

@@ -22,6 +22,50 @@ leak. "Send an email as me" would not be. If write access is ever wanted it
 belongs in a separate plugin with its own scopes, so the decision is explicit
 and shows up on the consent screen rather than being inherited silently.
 
+## Sending email: the owner's rule
+
+> **Never send an email without direct permission. The permission must be
+> TYPED, never spoken, and must be a specific phrase with correct syntax.**
+
+**Today this is absolute, because sending is impossible.** The token carries
+only `.readonly` scopes and Google refuses a send server-side — verified, not
+assumed:
+
+```
+send REFUSED by Google: HTTP 403  "Request had insufficient authentication scopes"
+```
+
+No send tool exists in the plugin either. `tests/test_send_consent.py` asserts
+both, so adding one by accident fails the suite.
+
+If send is ever wanted, the rule is already enforced by three layers, weakest
+last:
+
+1. **Scope.** A readonly token cannot send. Adding send needs a new Google
+   consent screen — itself a typed act by the owner at a Google login.
+2. **Structure.** A send tool must live in its own toolset that is absent from
+   `platform_toolsets.webhook`, so the **voice lane cannot see it at all**.
+   This is what makes "typed, not spoken" real: a tool handler *cannot* tell
+   which platform invoked it — the registry does not pass the platform down —
+   so a runtime "refuse if spoken" check would be a guess dressed as a control.
+   There is nothing to refuse because there is nothing to call.
+3. **Phrase.** `hermes_ext/plugins/hermes_google/consent.py`. Exact syntax:
+
+   ```
+   CONFIRM SEND TO <recipient> <your phrase>
+   ```
+
+   The phrase lives in `~/.config/hermes-pi/send-consent-phrase`, which only
+   you write. **Missing file = nothing can ever be sent** — it fails closed.
+
+**The recipient is part of the phrase on purpose.** A bare passphrase can be
+reused: once it appears in a conversation, every later send in that
+conversation is already authorised, including to an address you never approved.
+Binding it to the recipient makes consent authorise one delivery to one person.
+
+`check()` raises rather than returning a boolean, because a caller who forgets
+to test a return value must still be unable to send.
+
 ## Tools
 
 | | |

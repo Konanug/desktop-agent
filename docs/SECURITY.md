@@ -295,6 +295,22 @@ much smaller blast radius than a shell, and it is not zero:
   off. There is no equivalent kernel fact for a microphone, so the mic light
   trusts the voice service's own status file.
 
+### Email is READ-ONLY, by the owner's rule
+
+> Never send an email without direct permission, typed and never spoken, using
+> a specific phrase with correct syntax.
+
+Enforced today by capability rather than policy: the OAuth scopes are
+`.readonly`, Google refuses a send with HTTP 403, and no send path exists in
+the plugin. `tests/test_send_consent.py` pins both.
+
+The "typed, never spoken" half **cannot be a runtime check** — a tool handler
+cannot tell which platform invoked it, because the registry does not pass the
+platform to tools. It is therefore structural: any future send toolset stays
+out of `platform_toolsets.webhook`, so the voice lane never has the tool in its
+surface. A test asserts that against the live config, so widening the voice
+lane later fails loudly. See `docs/GOOGLE.md`.
+
 ### Still not built, and why
 
 **Gesture → Hermes.** The above is why. If it is ever built it needs: an

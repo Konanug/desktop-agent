@@ -26,3 +26,8 @@ venv/
 .vscode/
 *.swp
 .DS_Store
+
+# ── Google OAuth + the send-consent phrase (owner secrets, never in the repo)
+google-client-secret.json
+google-token.json
+send-consent-phrase
