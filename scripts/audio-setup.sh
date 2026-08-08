@@ -49,9 +49,22 @@ set_ 'Right Output Mixer PCM' on
 # Outputs. Both are driven because the HAT has a 3.5 mm jack (Headphone) and a
 # JST speaker connector (Speaker), and which is in use is not knowable from
 # here -- neither reports whether anything is plugged in.
-set_ 'Headphone' 110
-set_ 'Speaker'   110
-set_ 'Playback'  230        # the DAC's own level, ahead of both outputs
+set_ 'Headphone' 120
+set_ 'Speaker'   127        # max
+set_ 'Playback'  255        # max; the DAC's own level, ahead of both outputs
+
+# CLASS-D BOOST, and the reason the JST speaker was too quiet. `Speaker DC` and
+# `Speaker AC` are the WM8960's own speaker-driver gain and they come up at
+# 0 of 5 -- so the volume control was already near maximum while the amplifier
+# behind it was doing nothing. Small passive speakers on the JST header need
+# this; the headphone jack does not, which is why the jack sounded fine and the
+# JST did not.
+#
+# At 5/5 into a small driver this WILL clip on loud passages. That is the
+# owner's explicit choice ("crank it to the maximum"); drop both to 3 if it
+# sounds harsh rather than merely loud.
+set_ 'Speaker DC' 5
+set_ 'Speaker AC' 5
 
 # CAPTURE. The two mics are the point of this HAT, and this block is the
 # difference between them working and not.

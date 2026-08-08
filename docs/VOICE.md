@@ -213,6 +213,26 @@ door — nothing captured, empty transcript, rate limited, delivered, and
 finishing speaking. A path that skipped it would leave the detector primed and
 the buffer filling.
 
+### It cut people off mid-sentence
+
+Reported as: *"it always goes to idle while I'm talking if I'm not shouting."*
+One threshold was doing two jobs. It has to be high enough that room noise is
+not speech, which makes it too high to *follow* a sentence — ordinary speech
+dips hard between words and at the end of clauses, and every dip read as
+silence.
+
+Now hysteretic — strict to start, loose to continue:
+
+| room floor 215 | |
+|---|---|
+| **start** speaking | 473 (`floor × 2.2`, capped 900) |
+| **continue** speaking | 247 (`floor × 1.15`) |
+| *previously* | a single 646 for both |
+
+`SILENCE_END` also went 0.8 s → **1.3 s**: people pause mid-sentence to think,
+and 0.8 s is inside the range of an ordinary pause. The cost of being generous
+is bounded by `MAX_UTTERANCE`.
+
 ### Two bugs that made captures run long
 
 Both were real and both are pinned by `tests/test_voice.py`, verified to fail
@@ -292,6 +312,38 @@ Wake detection is skipped while `speaker.busy`, and everything ALSA buffered
 during playback is discarded when the turn closes. Piper through a speaker
 beside the microphone is far louder to that mic than a person is, so without
 both it would reliably answer itself.
+
+## Choosing a voice
+
+```bash
+python3 tools/tts_voices.py --list
+python3 tools/tts_voices.py --audition        # plays every candidate aloud
+python3 tools/tts_voices.py --use en_GB-cori-high
+systemctl --user restart hermes-voice
+```
+
+Eight are downloaded, from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices).
+Default is now **`en_GB-alan-medium`** (British male, RP-ish).
+
+`--use` repoints a `current.onnx` **symlink**, so changing voice needs no code
+edit, no unit edit, and the choice is visible in one `ls -l`. `speak.py`
+re-resolves it on each call, so it can change under a running service.
+
+Audition rather than read descriptions: two voices described identically as
+"British male" sound nothing alike, and the one that reads well in a demo can
+be the one that grates the tenth time it tells you the time.
+
+## Volume
+
+The JST speaker header is the WM8960's **class-D output**, and `Speaker DC` /
+`Speaker AC` — its amplifier gain — come up at **0 of 5**. So the volume
+control was already near maximum while the amplifier behind it did nothing.
+That is why the 3.5 mm jack sounded fine and the JST was too quiet.
+
+`scripts/audio-setup.sh` now sets the whole chain to maximum: `Playback` 255
+(0 dB), `Speaker` 127 (+6 dB), and both boosts 5/5. **At 5/5 into a small
+driver this will clip on loud passages** — drop both to 3 if it sounds harsh
+rather than merely loud.
 
 ## Setup
 

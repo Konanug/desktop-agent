@@ -33,7 +33,20 @@ from pathlib import Path
 
 from . import protocol
 
-VOICE_MODEL = Path.home() / ".local/share/hermes-pi/models/piper/en_US-lessac-medium.onnx"
+_PIPER_DIR = Path.home() / ".local/share/hermes-pi/models/piper"
+
+# A SYMLINK, not a filename. Changing voice is then `tools/tts_voices.py --use`
+# and a service restart -- no code edit, no unit edit, and the choice is
+# visible in one `ls -l`. Falls back to the original default so a missing
+# symlink degrades to a working voice rather than to silence.
+def _voice_model() -> Path:
+    cur = _PIPER_DIR / "current.onnx"
+    if cur.exists():
+        return cur
+    return _PIPER_DIR / "en_US-lessac-medium.onnx"
+
+
+VOICE_MODEL = _voice_model()
 
 # The piper BINARY FROM THIS VENV, resolved from sys.executable rather than
 # found on PATH. Debian ships an unrelated program also called `piper` (a mouse
@@ -57,6 +70,9 @@ class Speaker:
 
     @property
     def available(self) -> bool:
+        # Re-resolve each time: the symlink can change under a running service.
+        global VOICE_MODEL
+        VOICE_MODEL = _voice_model()
         if not Path(PIPER).exists() and shutil.which("piper") is None:
             self.error = ("piper-tts not installed in this venv "
                           "(scripts/install-voice.sh)")

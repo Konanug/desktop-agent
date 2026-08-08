@@ -24,10 +24,11 @@ def _err(e: Exception) -> str:
     return f"Google request failed: {e.__class__.__name__}: {e}"
 
 
-def gmail_unread(max_results: int = 10, **_kw) -> str:
+def gmail_unread(args: dict = None, **_kw) -> str:
     """How many unread, and who they are from."""
+    a = args if isinstance(args, dict) else {}
     try:
-        n = max(1, min(int(max_results or 10), MAX_ITEMS))
+        n = max(1, min(int(a.get("max_results") or 10), MAX_ITEMS))
         svc = service("gmail", "v1")
         res = svc.users().messages().list(
             userId="me", q="is:unread in:inbox", maxResults=n).execute()
@@ -51,9 +52,11 @@ def gmail_unread(max_results: int = 10, **_kw) -> str:
         return _err(e)
 
 
-def gmail_search(query: str = "", max_results: int = 10, **_kw) -> str:
+def gmail_search(args: dict = None, **_kw) -> str:
     """Search the mailbox with Gmail's own query syntax."""
-    query = str(query or "").strip()
+    a = args if isinstance(args, dict) else {}
+    max_results = a.get("max_results") or 10
+    query = str(a.get("query") or "").strip()
     if not query:
         return "Give a search query, e.g. 'from:bank newer_than:7d'."
     try:
@@ -112,8 +115,7 @@ def _body_text(payload) -> str:
     return re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]{2,}", " ", text)).strip()
 
 
-def gmail_read(message_id: str = "", query: str = "", max_chars: int = 2000,
-               **_kw) -> str:
+def gmail_read(args: dict = None, **_kw) -> str:
     """The actual text of one message.
 
     Takes a query as well as an id, because in practice nobody has a message
@@ -121,6 +123,9 @@ def gmail_read(message_id: str = "", query: str = "", max_chars: int = 2000,
     single newest match and says which one it picked, so a wrong pick is
     visible rather than silent.
     """
+    a = args if isinstance(args, dict) else {}
+    message_id, query = a.get("message_id"), a.get("query")
+    max_chars = a.get("max_chars") or 2000
     try:
         svc = service("gmail", "v1")
         mid = str(message_id or "").strip()
@@ -150,11 +155,12 @@ def gmail_read(message_id: str = "", query: str = "", max_chars: int = 2000,
         return _err(e)
 
 
-def calendar_agenda(days: int = 1, max_results: int = 10, **_kw) -> str:
+def calendar_agenda(args: dict = None, **_kw) -> str:
     """What is coming up, from now."""
+    a = args if isinstance(args, dict) else {}
     try:
-        d = max(1, min(int(days or 1), 30))
-        n = max(1, min(int(max_results or 10), MAX_ITEMS))
+        d = max(1, min(int(a.get("days") or 1), 30))
+        n = max(1, min(int(a.get("max_results") or 10), MAX_ITEMS))
         now = _dt.datetime.now(_dt.timezone.utc)
         svc = service("calendar", "v3")
         res = svc.events().list(

@@ -42,9 +42,18 @@ def _sanitise(text: str) -> str:
     return " ".join(out.split())[:MAX_CHARS]
 
 
-def speak(text: str = "", **_kwargs) -> str:
-    """Say something out loud in the room."""
-    clean = _sanitise(text)
+def speak(args: dict, **_kwargs) -> str:
+    """Say something out loud in the room.
+
+    SIGNATURE MATTERS HERE. Hermes calls a handler as `handler(args_dict,
+    **kwargs)` -- every other plugin in this repo does `def f(args: dict,
+    **kwargs)`. Declaring `def speak(text="")` instead bound the WHOLE
+    arguments dict to `text`, so str() of it was written to speak.txt and
+    piper read the punctuation out: every reply began with the spoken word
+    "text". It looked like a prompt problem and was a calling-convention one.
+    """
+    clean = _sanitise((args or {}).get("text") if isinstance(args, dict)
+                      else args)
     if not clean:
         return "Nothing to say: `text` was empty after sanitising."
     d = _runtime_dir()

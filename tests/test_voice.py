@@ -253,6 +253,8 @@ class _FakeEnds:
     def set_floor(self, f):
         self.floor = f
         self.threshold = max(f * 3.0, 120.0)
+    def reset(self):
+        pass
     def is_speech(self, frame):
         import numpy as np
         return float(np.sqrt(np.mean(frame.astype(np.float32) ** 2))) > self.threshold
@@ -446,6 +448,43 @@ def test_the_floor_survives_a_turn():
     body = inspect.getsource(m.Service.end_turn)
     assert "NoiseFloor()" not in body, \
         "end_turn throws away the floor estimate again"
+
+
+def test_the_endpointer_is_easier_to_KEEP_than_to_START():
+    """Reported as: it stops listening mid-sentence unless you shout.
+
+    One threshold cannot do both jobs. It has to be high enough that room
+    noise is not speech, which makes it too high to follow a sentence --
+    ordinary speech dips hard between words and at the end of clauses, and
+    every dip below the line read as silence. Hysteresis: strict to start,
+    loose to continue.
+    """
+    from voice import listen
+    import numpy as np
+    e = listen.Endpointer(215.0)
+    assert e.start_threshold > e.continue_threshold * 1.5, \
+        f"no hysteresis: start {e.start_threshold} continue {e.continue_threshold}"
+
+    rng = np.random.default_rng(0)
+    def frame(rms):
+        return (rng.standard_normal(1280) * rms).astype(np.int16)
+
+    e.reset()
+    # A dip between words, BEFORE speech has started, is not speech.
+    assert not e.is_speech(frame(300)), "started a turn on room-level noise"
+    # A clear voice starts it.
+    assert e.is_speech(frame(800))
+    # ... and the same dip now KEEPS it, which is the whole point.
+    assert e.is_speech(frame(300)), "cut off mid-sentence on an ordinary dip"
+    # Real silence still ends it.
+    assert not e.is_speech(frame(50))
+
+
+def test_the_start_threshold_still_has_a_ceiling():
+    """The deaf-endpointer guard must survive the hysteresis change."""
+    from voice import listen
+    e = listen.Endpointer(50_000.0)
+    assert e.start_threshold <= 900, f"no ceiling: {e.start_threshold}"
 
 
 def _run() -> int:

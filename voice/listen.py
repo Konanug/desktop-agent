@@ -251,23 +251,51 @@ class Endpointer:
     """
 
     def __init__(self, floor: float):
+        self.speaking = False
         self.set_floor(floor)
 
     def set_floor(self, floor: float) -> None:
-        """Recomputed from the room JUST BEFORE each capture, not at startup."""
+        """Recomputed from the room JUST BEFORE each capture, not at startup.
+
+        TWO THRESHOLDS, NOT ONE, and this is what stops it cutting people off.
+        A single threshold has to be high enough that room noise does not look
+        like speech, which makes it too high to follow a sentence: ordinary
+        speech is not a constant level, it dips hard between words and at the
+        end of clauses, and every dip below the line read as silence. The
+        symptom is exactly what was reported -- it gives up mid-sentence unless
+        you shout at it.
+
+        So START is strict and CONTINUE is loose. Getting a turn going needs a
+        clear voice; keeping it going only needs you to still be there. This is
+        ordinary VAD hysteresis and it is the difference between a threshold
+        you have to shout over and one you can talk over.
+        """
         self.floor = floor
-        # 3x the measured noise floor, with an absolute minimum so a silent
-        # room (floor near 0) does not make every rustle count as speech --
-        # and an absolute CEILING, because a floor estimate that has been
-        # polluted by speech makes the endpointer deaf, and a deaf endpointer
-        # fails silently: the wake fires, nothing registers, and the only
-        # symptom is "nothing usable captured". Observed at 3501 in a room
-        # measuring 250. Normal speech close to this mic sits well above 1200,
-        # so this ceiling cannot mask a real utterance.
-        self.threshold = min(max(floor * 3.0, 120.0), 1200.0)
+        # Ceiling on the start threshold: a floor estimate polluted by speech
+        # makes the endpointer deaf, and a deaf endpointer fails silently --
+        # the wake fires, nothing registers, and the only symptom is "nothing
+        # usable captured". Observed at 3501 in a room measuring 250.
+        self.start_threshold = min(max(floor * 2.2, 110.0), 900.0)
+        # Continue is deliberately near the floor: between words the level
+        # genuinely falls to near-silence, and SILENCE_END is what decides the
+        # turn is over -- not this.
+        self.continue_threshold = max(floor * 1.15, 60.0)
+
+    @property
+    def threshold(self) -> float:
+        """The one currently in force. Published in status.json."""
+        return self.continue_threshold if self.speaking else self.start_threshold
 
     def is_speech(self, frame: np.ndarray) -> bool:
-        return _rms(frame) > self.threshold
+        level = _rms(frame)
+        if level > self.threshold:
+            self.speaking = True
+            return True
+        self.speaking = False
+        return False
+
+    def reset(self) -> None:
+        self.speaking = False
 
 
 def measure_floor(rec: Recorder, seconds: float = 1.0,

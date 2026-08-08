@@ -170,6 +170,7 @@ class Service:
         # the first time the room got louder.
         if self.ends is not None:
             self.ends.set_floor(self.floor.value(fallback=self.ends.floor))
+            self.ends.reset()          # hysteresis starts strict every turn
 
         frames = self.pre.drain()
         quiet_for = 0.0
