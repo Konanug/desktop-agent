@@ -345,6 +345,54 @@ That is why the 3.5 mm jack sounded fine and the JST was too quiet.
 driver this will clip on loud passages** — drop both to 3 if it sounds harsh
 rather than merely loud.
 
+## Latency — where it actually goes
+
+A voice turn was taking **12–32 s**. Measured rather than guessed, and two of
+the three causes were mine.
+
+| | before | after |
+|---|---|---|
+| API calls per turn | 4–8 | **3** |
+| Prompt tokens per call | 19,400 | **~10,000** |
+| Per-call latency | 3–4 s | **~2 s** |
+| **Total** | **12–32 s** | **5.9–8.1 s** |
+
+**1. `tool_search` was costing three round trips.** Hermes defers tool schemas
+behind `tool_search` / `tool_describe` bridges so the model discovers tools
+instead of carrying them all in the prompt. That is a good trade on a huge
+surface. On 24 tools it bought nothing and cost ~6 s:
+
+```
+tool_describe → tool_search → tool_describe → gmail_unread → speak → reply
+```
+
+`tools.tool_search.enabled: off` collapses that to `gmail_unread → speak →
+reply`. It is a *global* setting, so Discord now carries its ~65 tools in the
+prompt too — that costs tokens, but cache hit rates are 96–97%, and trading
+cached tokens for round trips is the right way round.
+
+**2. I had loaded 63 tools into the voice lane.** Giving voice full parity
+pulled in `browser` (13), `kanban` (12), `bfl` (6) and `skills` — none of which
+can answer a spoken question, and `skills` is what produced a 14,137-character
+`skill_view` call mid-question. Trimmed to 24, `terminal` kept.
+
+**3. `agent.reasoning_effort` was `medium`.** At `low`, per-call latency went
+3–4 s → ~2 s. For "how many unread emails" the deliberation was not buying
+anything. Raise it back if written Discord answers get shallow — it is one key
+and it is global.
+
+### What is left, and what it would cost
+
+~6 s of the remaining time is three unavoidable model round trips: decide →
+call a tool → speak. The `speak` tool is one of them. Removing it would mean
+the voice service reading the final reply directly, which the webhook adapter
+cannot do — it is fire-and-forget with no synchronous return. That is a real
+piece of work (a delivery target plugin), not a setting.
+
+Add ~2 s for STT (`base.en` at 2.5× realtime) and ~1–2 s for speech. So
+**roughly 10 s from finishing your sentence to hearing an answer**, most of it
+the model. `HERMES_VOICE_STT=tiny.en` trades accuracy for ~0.5 s.
+
 ## Setup
 
 ```bash

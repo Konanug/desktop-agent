@@ -46,11 +46,15 @@ STT_MODEL = os.environ.get("HERMES_VOICE_STT", "base.en")
 # Utterance capture. A person pausing mid-sentence must not end the turn, and a
 # person who has finished must not wait around.
 MAX_UTTERANCE = 10.0    # hard ceiling; a stuck endpointer cannot record forever
-# Trailing silence that ends the turn. Raised from 0.8 s: people pause mid
-# sentence to think, and 0.8 s is inside the range of an ordinary pause, so it
-# was ending turns while the person was still mid-thought. The cost of being
-# generous here is bounded by MAX_UTTERANCE.
-SILENCE_END = float(os.environ.get("HERMES_VOICE_SILENCE_END", "1.3"))
+# Trailing silence that ends the turn.
+#
+# Went 0.8 -> 1.3 to stop it cutting people off mid-sentence, then back to 0.7
+# once HYSTERESIS made that the wrong lever. The two are doing different jobs
+# and conflating them cost a second of dead air on every single turn: the
+# continue-threshold is what keeps a sentence alive through its dips, so this
+# only has to be long enough to distinguish "finished" from "drawing breath".
+# With the loose continue threshold, 0.7 s of genuine silence means finished.
+SILENCE_END = float(os.environ.get("HERMES_VOICE_SILENCE_END", "0.7"))
 MIN_UTTERANCE = 0.4     # shorter than this is a cough, not a request
 
 # If NOTHING is said in this long after a wake, give up immediately.

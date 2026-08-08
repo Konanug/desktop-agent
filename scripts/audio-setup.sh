@@ -49,9 +49,16 @@ set_ 'Right Output Mixer PCM' on
 # Outputs. Both are driven because the HAT has a 3.5 mm jack (Headphone) and a
 # JST speaker connector (Speaker), and which is in use is not knowable from
 # here -- neither reports whether anything is plugged in.
-set_ 'Headphone' 120
-set_ 'Speaker'   127        # max
-set_ 'Playback'  255        # max; the DAC's own level, ahead of both outputs
+# LEVEL as a percentage, so this is one number to change rather than three.
+# Analog is what moves; the DIGITAL level (Playback) stays high because
+# attenuating in the DAC throws away bits and costs signal-to-noise for
+# nothing. Reduce the amplifier, not the samples.
+LEVEL="${HERMES_SPEAKER_LEVEL:-60}"
+_pct() { echo $(( $1 * LEVEL / 100 )); }
+
+set_ 'Headphone' "$(_pct 127)"
+set_ 'Speaker'   "$(_pct 127)"
+set_ 'Playback'  245        # near max on purpose -- see above
 
 # CLASS-D BOOST, and the reason the JST speaker was too quiet. `Speaker DC` and
 # `Speaker AC` are the WM8960's own speaker-driver gain and they come up at
@@ -63,8 +70,11 @@ set_ 'Playback'  255        # max; the DAC's own level, ahead of both outputs
 # At 5/5 into a small driver this WILL clip on loud passages. That is the
 # owner's explicit choice ("crank it to the maximum"); drop both to 3 if it
 # sounds harsh rather than merely loud.
-set_ 'Speaker DC' 5
-set_ 'Speaker AC' 5
+# 3 rather than 5: at full boost a small driver clips on loud passages, and
+# clipping reads as "harsh" rather than "loud" -- more gain past that point
+# makes it worse, not louder.
+set_ 'Speaker DC' 3
+set_ 'Speaker AC' 3
 
 # CAPTURE. The two mics are the point of this HAT, and this block is the
 # difference between them working and not.
