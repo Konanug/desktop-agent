@@ -31,6 +31,7 @@ import hashlib
 import hmac
 import json
 import os
+import pathlib
 import sys
 import time
 
@@ -176,10 +177,28 @@ def test_status_survives_numpy_scalars():
 
 
 # -- speaking -------------------------------------------------------------
+def _temp_runtime():
+    """Point the runtime dir at a temp directory.
+
+    The real one is /run/user/<uid>, which EXISTS ONLY FOR A LOGGED-IN USER.
+    A CI runner has no such directory and cannot create it, so a test that
+    wrote there passed on the Pi and failed on every runner -- which is exactly
+    what happened, and the log was not readable without auth to say so.
+    A test should not need the machine it was written on.
+    """
+    import tempfile
+    d = pathlib.Path(tempfile.mkdtemp())
+    protocol.runtime_dir = lambda: d
+    protocol.ensure_dirs = lambda: (d.mkdir(parents=True, exist_ok=True), d)[1]
+    protocol.speak_path = lambda: d / "speak.txt"
+    return d
+
+
 def test_pending_speech_is_consumed_exactly_once():
     """An EDGE, not a level. Left in place the reply would be recited every
     tick, which is precisely the mistake gestures made with hands.json."""
     from voice import speak
+    _temp_runtime()
     protocol.ensure_dirs()
     protocol.speak_path().write_text("hello there")
     assert speak.take_pending() == "hello there"
@@ -188,6 +207,7 @@ def test_pending_speech_is_consumed_exactly_once():
 
 def test_missing_speech_file_is_not_an_error():
     from voice import speak
+    _temp_runtime()
     protocol.speak_path().unlink(missing_ok=True)
     assert speak.take_pending() is None
 

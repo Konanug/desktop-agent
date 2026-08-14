@@ -79,6 +79,14 @@ def test_valid_image_normalised_to_exact_size():
 
 
 def test_text_sanitised():
+    # Redirect the runtime dir to a temp path. The real one is
+    # /run/user/<uid>, which exists only for a logged-in user -- a CI runner
+    # has none and cannot create it, so this passed on the Pi and failed on
+    # every runner. A test should not require the machine it was written on.
+    import pathlib as _p, tempfile
+    d = _p.Path(tempfile.mkdtemp())
+    tools._runtime_dir = lambda: d
+
     tools.display_show_text({"text": "hello\x00\x1b[31m world" + "x" * 400})
     got = json.loads((tools._runtime_dir() / "request.json").read_text())["text"]
     assert "\x00" not in got and "\x1b" not in got
