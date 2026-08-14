@@ -280,7 +280,7 @@ python hermes_gesture.py --config gestures.json
 
 ```json
 {
-  "url": "http://192.168.2.56:8081",
+  "url": "http://192.168.1.50:8081",
   "token": "<from ~/.config/hermes-pi/camera-stream.token on the Pi>",
   "cooldown_s": 1.5,
   "allow_run": false,

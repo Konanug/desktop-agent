@@ -26,7 +26,7 @@
     "",
     "Run with --dry-run first. Always."
   ],
-  "url": "http://192.168.2.56:8081",
+  "url": "http://192.168.1.50:8081",
   "token": "PASTE_FROM_THE_PI",
   "cooldown_s": 1.5,
   "allow_run": false,

@@ -1,0 +1,23 @@
+name: tests
+on: [push, pull_request]
+
+# The suite is deliberately dependency-light: every module runs as plain
+# python3 with no pytest, so CI runs the same command a person types on the Pi.
+# Hardware-bound parts (camera, mic, framebuffer) are stubbed inside the tests
+# rather than skipped, so this stays meaningful with no Pi attached.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: pip install numpy pillow pyyaml
+      - name: run every test module
+        run: |
+          fail=0
+          for t in tests/test_*.py; do
+            echo "== $t"
+            python3 "$t" || fail=1
+          done
+          exit $fail

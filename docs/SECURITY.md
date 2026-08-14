@@ -4,7 +4,7 @@ Audited 2026-08-04. This box holds a Discord bot token and ChatGPT OAuth tokens,
 toolset is enabled — so **anyone who can reach the bot or the shell can run commands as `alanmyin`.**
 That single fact drives everything below.
 
-**Exposure:** LAN only (`192.168.2.56/24`, wlan0). No port forwarding, no tunnel. Corroborated by zero
+**Exposure:** LAN only (`<pi-lan-ip>/24`, wlan0). No port forwarding, no tunnel. Corroborated by zero
 failed SSH auth attempts in 7 days — an internet-facing port 22 essentially never shows that.
 
 ---
@@ -106,12 +106,12 @@ Applied 2026-08-04, in this order — the order is the safety property, not a fo
 3. **Key login verified in a new session while the old one stayed open**, confirmed in the auth log —
    not inferred from which prompt appeared:
    ```
-   Accepted publickey for alanmyin from 192.168.2.89 ED25519 SHA256:E8othIIqyxCRYT…
+   Accepted publickey for alanmyin from <pi-lan-ip> ED25519 SHA256:E8othIIqyxCRYT…
    Accepted publickey: 1    Accepted password: 0
    ```
 4. Only then `PasswordAuthentication no`, validated with `sshd -t` before reload
 
-Installed key: `SHA256:E8othIIqyxCRYTkVkZcuKKugkGsUFCjHSQQLc6CXdE0` (`alanmyin-laptop`).
+Installed key: `SHA256:<redacted>` (`alanmyin-laptop`).
 
 `KbdInteractiveAuthentication no` is set alongside it. That is not redundant: with `UsePAM yes`,
 keyboard-interactive can still reach the PAM password stack even when `PasswordAuthentication no` —

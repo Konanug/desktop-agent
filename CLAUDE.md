@@ -102,7 +102,7 @@ Rebuild: `python3 tools/render_frames.py --out assets/anim` (~5 min).
 | Model | `openai-codex/gpt-5.6-terra`; auxiliary → `gpt-5.6-luna` |
 | Services | `hermes-gateway`, `hermes-display`, `hermes-camera`, `hermes-usage`, `hermes-audio`, `hermes-voice`, `hermes-button` (user) · `hermes-fbcon-detach` (system) |
 | Runtime state | `/run/user/1000/hermes-display/{state.json,request.json,images/}` |
-| Network | LAN only, `192.168.2.56`. Two network-facing sockets: **22** (ssh) and **8081** (camera live view, token-gated). |
+| Network | LAN only, `<pi-lan-ip>`. Two network-facing sockets: **22** (ssh) and **8081** (camera live view, token-gated). |
 
 The renderer needs **no installed dependencies** — system Pillow 11.1.0 and
 numpy 2.2.4 only. Do not add a venv or pip installs without good reason.

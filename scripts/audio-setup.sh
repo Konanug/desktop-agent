@@ -53,7 +53,7 @@ set_ 'Right Output Mixer PCM' on
 # Analog is what moves; the DIGITAL level (Playback) stays high because
 # attenuating in the DAC throws away bits and costs signal-to-noise for
 # nothing. Reduce the amplifier, not the samples.
-LEVEL="${HERMES_SPEAKER_LEVEL:-60}"
+LEVEL="${HERMES_SPEAKER_LEVEL:-80}"
 _pct() { echo $(( $1 * LEVEL / 100 )); }
 
 set_ 'Headphone' "$(_pct 127)"

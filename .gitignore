@@ -43,3 +43,6 @@ send-consent-phrase
 gestures.json
 !clients/windows/gestures.example.json
 asound.state
+
+# Private worklog -- notes to the owner, not part of the project
+HANDOFF.md

@@ -467,7 +467,7 @@ def main(argv=None) -> int:
         print(f"{path} is not valid JSON: {e}", flush=True)
         return 2
     if not cfg.get("url"):
-        print(f"{path} needs a \"url\", e.g. http://192.168.2.56:8081",
+        print(f"{path} needs a \"url\", e.g. http://192.168.1.50:8081",
               flush=True)
         return 2
 

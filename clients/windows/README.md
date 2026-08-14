@@ -16,7 +16,7 @@ in this repo.
 **1. Get the token from the Pi**
 
 ```bash
-ssh alanmyin@192.168.2.56 cat ~/.config/hermes-pi/camera-stream.token
+ssh alanmyin@192.168.1.50 cat ~/.config/hermes-pi/camera-stream.token
 ```
 
 **2. Copy the config and edit it**
@@ -26,7 +26,7 @@ copy gestures.example.json gestures.json
 notepad gestures.json
 ```
 
-Set `url` (`http://192.168.2.56:8081`) and paste the `token`.
+Set `url` (`http://192.168.1.50:8081`) and paste the `token`.
 
 **3. Dry run — always do this first**
 
@@ -108,7 +108,7 @@ journalctl --user -u hermes-camera | grep "gesture seq="
 |---|---|
 | `403 forbidden` | token does not match `~/.config/hermes-pi/camera-stream.token` on the Pi |
 | `404 — gestures disabled` | `HERMES_CAMERA_GESTURES=off` in the Pi's unit |
-| Connects, never any events | camera muted, hand tracking not installed (`scripts/install-cv.sh`), or nothing detected — open `http://192.168.2.56:8081/?k=TOKEN` and check the LAST EDGE line |
+| Connects, never any events | camera muted, hand tracking not installed (`scripts/install-cv.sh`), or nothing detected — open `http://192.168.1.50:8081/?k=TOKEN` and check the LAST EDGE line |
 | `SendInput sent 0/2` | a focused elevated window; Windows blocks injection into higher-integrity processes |
 | Reconnects in a loop | Pi rebooting, or the camera service crash-looping — check `systemctl --user status hermes-camera` |
 | Fires once then goes quiet | the gesture is latched; drop your hand to clear it, that is the design |

@@ -22,7 +22,7 @@ run shell commands as `alanmyin`. Every other security measure on this box assum
 ### What we do know
 
 Positive path is proven: the session record for the working message carried
-`user_id: 1161165901995987084`, matching the single allowlist entry — so the allowlist is genuinely what
+`user_id: <discord-id>`, matching the single allowlist entry — so the allowlist is genuinely what
 admitted that message, not an open door. Hermes' docs also state the gateway denies all users by default
 when neither `DISCORD_ALLOWED_USERS` nor `DISCORD_ALLOWED_ROLES` is set, and we set the former
 explicitly rather than relying on that default.

@@ -76,7 +76,7 @@ BUG_REPORT_URL="https://bugs.debian.org/"
 
 ### Kernel / arch
 ```
-Linux alanmyin5 6.18.34+rpt-rpi-2712 #1 SMP PREEMPT Debian 1:6.18.34-1+rpt1 (2026-06-09) aarch64 GNU/Linux
+Linux <hostname> 6.18.34+rpt-rpi-2712 #1 SMP PREEMPT Debian 1:6.18.34-1+rpt1 (2026-06-09) aarch64 GNU/Linux
 ```
 
 ### Memory
@@ -112,7 +112,7 @@ throttled=0x0
 ```
 lo               UNKNOWN        127.0.0.1/8 ::1/128 
 eth0             DOWN           
-wlan0            UP             192.168.2.56/24 fe80::8aa2:9eff:fec2:f23c/64 
+wlan0            UP             <pi-lan-ip>/24 fe80::8aa2:9eff:fec2:f23c/64 
 ```
 
 ## Display
