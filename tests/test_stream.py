@@ -147,9 +147,22 @@ class _Server:
         self.srv.stop()
 
 
-def _code(url):
+def _code(url, timeout=None):
+    """HTTP status, with a client timeout that CANNOT race the server.
+
+    The snapshot endpoint deliberately waits FRAME_WAIT for a fresh frame
+    before refusing. A client timeout equal to that is a coin toss decided by
+    scheduling: on an idle Pi the server answered first and the test passed,
+    on a loaded CI runner the client gave up first and it failed with
+    TimeoutError. It looked like flakiness and was a fixed race.
+
+    Derived from FRAME_WAIT rather than hardcoded, so changing the server's
+    wait cannot silently reintroduce it.
+    """
+    if timeout is None:
+        timeout = stream.FRAME_WAIT * 2 + 5
     try:
-        return urllib.request.urlopen(url, timeout=5).status
+        return urllib.request.urlopen(url, timeout=timeout).status
     except urllib.error.HTTPError as e:
         return e.code
 
