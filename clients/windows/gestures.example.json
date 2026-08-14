@@ -73,6 +73,30 @@
     "HERMES MINIMIZE": {
       "type": "key",
       "keys": "win+down"
+    },
+    "HERMES SPOTIFY": {
+      "type": "url",
+      "url": "https://open.spotify.com"
+    },
+    "HERMES GITHUB": {
+      "type": "url",
+      "url": "https://github.com"
+    },
+    "HERMES DESKTOP": {
+      "type": "key",
+      "keys": "win+d"
+    },
+    "HERMES LOCK": {
+      "type": "key",
+      "keys": "win+l"
+    },
+    "HERMES SCREENSHOT": {
+      "type": "key",
+      "keys": "win+shift+s"
+    },
+    "HERMES NEXT_DESKTOP": {
+      "type": "key",
+      "keys": "ctrl+win+right"
     }
   }
 }

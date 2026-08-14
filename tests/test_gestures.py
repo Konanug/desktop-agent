@@ -527,6 +527,51 @@ def test_every_bound_key_name_resolves():
         "an extended-key code that is not in the table can never be sent"
 
 
+# -- Hermes naming an action for the laptop ------------------------------
+def test_hermes_intents_do_not_inherit_gesture_bindings():
+    """TWO SEPARATE GRANTS, and this is the property that keeps them separate.
+
+    Binding PEACE means "a hand in front of my camera may do this". If a
+    HERMES intent also matched that bare binding, then asking Hermes to do
+    something would silently inherit every gesture ever bound -- granting a
+    gesture would be granting the agent, which is not what anyone means by it.
+    """
+    import sys, os
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "clients", "windows"))
+    import hermes_gesture as hg
+    cfg = {"url": "http://x", "bindings": {
+        "PEACE": {"type": "key", "keys": "play_pause"},
+        "HERMES GMAIL": {"type": "url", "url": "https://mail.google.com"}}}
+    d = hg.Dispatcher(cfg, hg.Keyboard(dry_run=True))
+    assert d.lookup("RIGHT", "PEACE")[0] == "PEACE", "a hand lost its binding"
+    assert d.lookup("HERMES", "PEACE")[0] is None, \
+        "Hermes reached a binding meant for a hand"
+    assert d.lookup("HERMES", "GMAIL")[0] == "HERMES GMAIL"
+    assert d.lookup("HERMES", "ANYTHING")[0] is None
+
+
+def test_an_intent_is_an_ordinary_event_on_the_same_wire():
+    """So every existing protection applies unchanged -- age_s, no replay, the
+    viewer requirement and the rate limits are not re-implemented for this."""
+    log = gestures.EventLog()
+    ev = gestures.publish_intent(log, "gmail")
+    d = ev.as_dict()
+    assert d["hand"] == "HERMES" and d["gesture"] == "GMAIL"
+    assert "age_s" in d and d["seq"] == 1
+    assert [e.seq for e in log.since(0)] == [1]
+
+
+def test_intent_names_are_a_closed_shape():
+    """A name that could carry punctuation or whitespace would be somewhere to
+    smuggle something into whatever the laptop does with it."""
+    log = gestures.EventLog()
+    ev = gestures.publish_intent(log, "  open_gmail  ")
+    assert ev.gesture == "OPEN_GMAIL", ev.gesture
+    assert len(gestures.publish_intent(log, "x" * 200).gesture) <= 32
+
+
 def _run() -> int:
     fails = 0
     for name, fn in sorted(globals().items()):

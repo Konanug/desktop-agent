@@ -471,3 +471,64 @@ A learned gesture that happens to resemble `FIST` does **not** shadow it —
 bindings that already work would start doing something else with no visible
 cause. Learned gestures fill the gap where the finger table says nothing, which
 is the space they were recorded in anyway.
+
+
+---
+
+## Hermes driving the laptop
+
+"Open Gmail" spoken to Hermes, or typed in Discord, reaches the laptop through
+**the same wire the gestures use**.
+
+```
+Hermes ─► laptop_do("GMAIL") ─► POST /intent ─► /events ─► client ─► browser
+          (names it)                            (same SSE stream)   (decides)
+```
+
+### The Pi names; the laptop decides
+
+That is the whole safety argument, and it is the same one that put the gesture
+mapping on the laptop rather than the Pi. **Hermes cannot open a URL, press a
+key, or run anything on another machine.** It can only put a word on a stream.
+If the laptop's config has no binding for that word, nothing happens, and
+nothing the agent says can create one.
+
+So the worst case from a compromised Pi — or from someone talking to Hermes who
+should not be — is the same as the worst case for gestures: a word that still
+only reaches the fixed list the owner wrote down themselves.
+
+### Intents do NOT inherit gesture bindings
+
+`HERMES PEACE` does **not** match a bare `PEACE` binding. Two different grants:
+binding `PEACE` means *a hand in front of my camera may do this*. If intents
+fell back to it, granting a gesture would silently grant the agent everything
+you had ever bound to a hand. `tests/test_gestures.py` pins it.
+
+```json
+"HERMES GMAIL":    { "type": "url", "url": "https://mail.google.com" },
+"HERMES YOUTUBE":  { "type": "url", "url": "https://youtube.com" },
+"HERMES DESKTOP":  { "type": "key", "keys": "win+d" },
+"HERMES LOCK":     { "type": "key", "keys": "win+l" },
+"HERMES SCREENSHOT": { "type": "key", "keys": "win+shift+s" }
+```
+
+Delete them all and Hermes can do nothing to the laptop, while gestures keep
+working.
+
+### Everything else applies unchanged
+
+An intent is an ordinary event on the existing stream, so it inherits the lot
+rather than re-implementing any of it: token-gated, `age_s` freshness, no
+replay on reconnect, the client's own per-binding cooldown, and the requirement
+that a subscriber be attached at all. `laptop_do` says so when nobody is
+listening rather than reporting success into the void.
+
+Names are `[A-Za-z0-9_]{1,32}` — a name that could carry punctuation or spaces
+would be a place to smuggle something into whatever the laptop does with it.
+
+### The `url` action
+
+`webbrowser.open`, not `start` — it opens the default browser without a shell,
+so a URL can never be read as a command line however it is punctuated. Only
+`http://` and `https://` are accepted; `file://` and protocol handlers are a
+much larger thing to hand to a room, and are refused at startup.

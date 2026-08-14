@@ -302,7 +302,22 @@ class Dispatcher:
         return action
 
     def lookup(self, hand: str, gesture: str):
-        """'RIGHT PEACE' beats 'PEACE'. Specific wins."""
+        """'RIGHT PEACE' beats 'PEACE'. Specific wins.
+
+        HERMES INTENTS DO NOT FALL BACK TO A BARE BINDING, and that is a
+        deliberate separation of two different grants. Binding `PEACE` means
+        "a hand in front of my camera may do this". If a `HERMES PEACE` intent
+        also matched it, then asking Hermes to do something would silently
+        inherit every gesture you had ever bound -- so granting a gesture would
+        be granting the agent, which is not what anyone means by it.
+
+        With the fallback removed, the two lists are independent: you can bind
+        gestures without giving Hermes anything, and vice versa.
+        """
+        hand = (hand or "").upper()
+        if hand == "HERMES":
+            key = f"HERMES {gesture}".upper()
+            return (key, self.bindings[key]) if key in self.bindings else (None, None)
         for key in (f"{hand} {gesture}".upper(), gesture.upper()):
             if key in self.bindings:
                 return key, self.bindings[key]
