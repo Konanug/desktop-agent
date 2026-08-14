@@ -572,6 +572,45 @@ def test_intent_names_are_a_closed_shape():
     assert len(gestures.publish_intent(log, "x" * 200).gesture) <= 32
 
 
+def test_an_app_action_cannot_name_an_arbitrary_uri():
+    """THE CONFIG PICKS A KEY; THIS FILE OWNS THE VALUE.
+
+    'url' refuses anything that is not http(s) precisely because a protocol
+    handler is a much larger thing to hand to a room -- handlers come from
+    whatever is installed, some take arguments, and file: reaches the disk.
+    Launching Spotify needs exactly one such scheme, so it is resolved from a
+    table in the client rather than written in the config. If a config could
+    supply the URI, adding 'app' would have quietly repealed the url rule.
+    """
+    import hermes_gesture as hg
+    ok = hg.Dispatcher({"url": "http://x", "bindings": {
+        "HERMES SPOTIFY": {"type": "app", "app": "spotify"}}},
+        hg.Keyboard(dry_run=True))
+    assert ok.lookup("HERMES", "SPOTIFY")[0] == "HERMES SPOTIFY"
+
+    for bad in ("file", "ms-settings", "spotify:", "", "SPOTIFY x"):
+        try:
+            hg.Dispatcher({"url": "http://x", "bindings": {
+                "HERMES X": {"type": "app", "app": bad}}},
+                hg.Keyboard(dry_run=True))
+        except ValueError:
+            continue
+        raise AssertionError(f"app {bad!r} was accepted; the table is not closed")
+
+
+def test_the_url_action_still_refuses_protocol_handlers():
+    """Regression guard on the boundary the 'app' table exists to preserve."""
+    import hermes_gesture as hg
+    for bad in ("spotify:", "file:///C:/Windows", "ms-settings:", "javascript:0"):
+        try:
+            hg.Dispatcher({"url": "http://x", "bindings": {
+                "HERMES X": {"type": "url", "url": bad}}},
+                hg.Keyboard(dry_run=True))
+        except ValueError:
+            continue
+        raise AssertionError(f"url {bad!r} was accepted")
+
+
 def _run() -> int:
     fails = 0
     for name, fn in sorted(globals().items()):

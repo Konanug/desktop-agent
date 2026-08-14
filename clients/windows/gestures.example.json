@@ -15,6 +15,8 @@
     "  \"ctrl+shift+m\"                      shorthand for a key action",
     "  {\"type\":\"key\",  \"keys\":\"volume_up\"}",
     "  {\"type\":\"url\",  \"url\":\"https://youtube.com\"}   opens in your browser",
+    "  {\"type\":\"app\",  \"app\":\"spotify\"}    launches the DESKTOP app --",
+    "      the app list is CLOSED and lives in hermes_gesture.py, not here",
     "  {\"type\":\"text\", \"text\":\"hello\"}     types into the FOCUSED window",
     "  {\"type\":\"log\"}                       prints only -- audition a gesture",
     "  {\"type\":\"run\",  \"command\":[\"notepad.exe\"]}   needs allow_run: true",
@@ -75,8 +77,8 @@
       "keys": "win+down"
     },
     "HERMES SPOTIFY": {
-      "type": "url",
-      "url": "https://open.spotify.com"
+      "type": "app",
+      "app": "spotify"
     },
     "HERMES GITHUB": {
       "type": "url",

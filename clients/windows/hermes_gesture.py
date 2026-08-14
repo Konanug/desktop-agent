@@ -74,6 +74,23 @@ BACKOFF_MAX = 20.0
 # (10 s) or every quiet period would look like a dead connection.
 READ_TIMEOUT = 30.0
 
+# Desktop apps a gesture may launch, by NAME, resolved to a URI here.
+#
+# WHY A TABLE AND NOT A URI IN THE CONFIG. The "url" action deliberately
+# refuses anything that is not http(s), because a protocol handler is a far
+# larger thing to hand to a room than a web page: handlers are registered by
+# whatever software is installed, some take arguments, and "file:" reaches the
+# disk. Allowing the config to name a scheme would quietly undo that.
+#
+# So the config names a KEY and this file owns the VALUE -- the same shape as
+# the virtual-key table above and as the closed gesture vocabulary on the Pi.
+# Adding an app is a code change, reviewed once, rather than a config change
+# anyone can make. Entries must be schemes that take NO arguments, so there is
+# nothing for a caller to inject into.
+APPS = {
+    "spotify": "spotify:",
+}
+
 
 # -- input synthesis -------------------------------------------------------
 # Virtual key codes. Deliberately a FIXED TABLE and not "look up any key the
@@ -295,6 +312,15 @@ class Dispatcher:
                     f"{key}: 'url' must start with http:// or https://. "
                     f"Anything else is a file or a protocol handler, which is "
                     f"a different and much larger thing to hand to a room.")
+        elif kind == "app":
+            name = str(action.get("app") or "").strip().lower()
+            if name not in APPS:
+                raise ValueError(
+                    f"{key}: unknown app {name!r}. The list is CLOSED and "
+                    f"lives in this file, not in your config: "
+                    f"{', '.join(sorted(APPS))}. That is the point -- a config "
+                    f"cannot name an arbitrary protocol handler, so the worst "
+                    f"a gesture can reach is one of these.")
         elif kind == "log":
             pass
         else:
@@ -352,6 +378,22 @@ class Dispatcher:
                     print(f"  [dry-run] open {action['url']}", flush=True)
                 else:
                     webbrowser.open(action["url"])
+            elif kind == "app":
+                # os.startfile, not webbrowser: webbrowser hands the string to
+                # the DEFAULT BROWSER, which is the wrong program for a
+                # non-http scheme and may simply drop it. startfile is the
+                # shell's own "open this the way the system would", which is
+                # what launches the registered desktop app. No shell string is
+                # built, so there is nothing to quote or escape.
+                uri = APPS[str(action["app"]).strip().lower()]
+                if self.kb.dry_run:
+                    print(f"  [dry-run] launch {uri}", flush=True)
+                elif hasattr(os, "startfile"):
+                    os.startfile(uri)          # type: ignore[attr-defined]
+                else:
+                    print(f"  ! app actions need Windows (no os.startfile)",
+                          flush=True)
+                    return False
             elif kind == "run":
                 if self.kb.dry_run:
                     print(f"  [dry-run] run {action['command']}", flush=True)
