@@ -358,6 +358,19 @@ non-zero. `tests/test_hands.py` already pinned this for the camera and the
 lesson still had to be relearned — coerce with `float()` at the publishing
 boundary, not per field.
 
+**33. A tool schema wrapped in the OpenAI `{"type":"function","function":{…}}`
+envelope REGISTERS FINE AND SILENTLY LOSES ITS PARAMETERS.** Hermes'
+`ctx.register_tool` wants `name`/`description`/`parameters` FLAT at the top
+level, as every plugin in `hermes_ext/` does. Wrapped, the tool appears in the
+surface, the model calls it, and the handler receives `args={}` with only
+`task_id`/`session_id`/`user_task` in kwargs — the declared arguments never
+arrive. `speak` therefore answered "nothing to say" on every voice turn, which
+looks like a handler bug and was misdiagnosed as one twice. **Also: Hermes
+calls handlers BOTH ways** — `handler({"text": …})` and `handler({}, text=…)` —
+so `hermes_ext/plugins/_argshim.py` reads from both rather than guessing. The
+symptom of getting either wrong is silence at the far end of the pipeline, a
+long way from the schema.
+
 **26. Feeding unrelated stills to a `RunningMode.VIDEO` tracker measures
 nothing.** VIDEO mode carries a track between frames and uses the previous
 frame as a prior, so jump-cutting between different photos breaks it. The

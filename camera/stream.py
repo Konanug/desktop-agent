@@ -373,6 +373,53 @@ def _make_handler(buf: StreamBuffer, token: str, status_fn, events=None):
                 self._send(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8",
                            b"not found\n")
 
+        def do_POST(self):                                   # noqa: N802
+            u = urlparse(self.path)
+            if not self._authorised(parse_qs(u.query)):
+                self._send(HTTPStatus.FORBIDDEN, "text/plain; charset=utf-8",
+                           b"forbidden\n")
+                return
+            if u.path.rstrip("/") != "/intent" or events is None:
+                self._send(HTTPStatus.NOT_FOUND, "application/json",
+                           b'{"error":"not found"}\n')
+                return
+            self._intent()
+
+        def _intent(self):
+            """Hermes NAMING an action for a subscriber to interpret.
+
+            Deliberately the same wire, the same token and the same event shape
+            as a gesture, because the safety argument is identical: this only
+            puts a WORD on a stream. The laptop owns what words mean, ignores
+            ones it does not know, and cannot be given new ones from here.
+
+            Bound to loopback in practice -- the only caller is the plugin
+            inside the gateway on this box -- but it is behind the token
+            anyway, because "nothing else can reach it" is an assumption about
+            the network and the token is a fact about the request.
+            """
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
+                name = str(body.get("action") or "").strip()
+            except (ValueError, OSError):
+                self._send(HTTPStatus.BAD_REQUEST, "application/json",
+                           b'{"error":"bad body"}\n')
+                return
+            if not name.replace("_", "").isalnum() or len(name) > 32:
+                self._send(HTTPStatus.BAD_REQUEST, "application/json",
+                           b'{"error":"action must be a short plain name"}\n')
+                return
+            from . import gestures as _g
+            ev = _g.publish_intent(events, name)
+            print(f"[camera] intent {ev.gesture} from Hermes "
+                  f"(seq={ev.seq}, subscribers={buf.viewers})", flush=True)
+            self._send(HTTPStatus.OK, "application/json", json.dumps({
+                "seq": ev.seq, "action": ev.gesture,
+                "subscribers": buf.viewers,
+            }).encode())
+
+
         # -- endpoints --------------------------------------------------
         def _hands(self):
             """Latest hand observation, for a client that wants to act on it.

@@ -23,6 +23,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _argshim import arg as _arg      # noqa: E402
+
 MAX_CHARS = 600
 
 
@@ -42,7 +46,7 @@ def _sanitise(text: str) -> str:
     return " ".join(out.split())[:MAX_CHARS]
 
 
-def speak(args: dict, **_kwargs) -> str:
+def speak(args=None, **_kwargs) -> str:
     """Say something out loud in the room.
 
     SIGNATURE MATTERS HERE. Hermes calls a handler as `handler(args_dict,
@@ -52,8 +56,7 @@ def speak(args: dict, **_kwargs) -> str:
     piper read the punctuation out: every reply began with the spoken word
     "text". It looked like a prompt problem and was a calling-convention one.
     """
-    clean = _sanitise((args or {}).get("text") if isinstance(args, dict)
-                      else args)
+    clean = _sanitise(_arg(args, _kwargs, "text", ""))
     if not clean:
         return "Nothing to say: `text` was empty after sanitising."
     d = _runtime_dir()

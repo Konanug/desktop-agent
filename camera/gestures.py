@@ -252,6 +252,29 @@ class _Slot:
         return True, value
 
 
+def publish_intent(log: "EventLog", name: str, reason: str = "") -> "Event":
+    """Put a NAMED action on the same wire a gesture uses.
+
+    THE PI NAMES; THE LAPTOP DECIDES. This is the whole safety argument, and it
+    is the same one that made the gesture mapping live on the laptop rather
+    than here. Hermes cannot open a URL, press a key, or run anything on
+    another machine -- it can only say a word like "GMAIL" onto a stream. If
+    the laptop's config has no binding for that word, nothing happens, and
+    nothing the agent can say changes that.
+
+    So the worst case from a compromised Pi, or from someone talking to Hermes
+    who should not be, is the SAME as the worst case for gestures: a word that
+    still only reaches the fixed list the laptop's owner wrote down.
+
+    Emitted as a normal event with hand="HERMES", so every existing protection
+    applies unchanged -- the subscriber is still a viewer, events still carry
+    age_s, replay is still refused, and the sliding rate limits still bound it.
+    """
+    return log.publish(at=time.time(), mono=time.monotonic(), hand="HERMES",
+                       gesture=str(name).strip().upper()[:32],
+                       fingers_up=0, bbox=(0.0, 0.0, 0.0, 0.0), score=1.0)
+
+
 class GestureGate:
     """Debounced gesture edges from a stream of hand-tracking results."""
 

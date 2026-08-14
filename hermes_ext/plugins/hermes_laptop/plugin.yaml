@@ -1,0 +1,5 @@
+name: hermes_laptop
+version: 1.0.0
+description: Ask the owner's laptop to do one of the things it has agreed to do.
+author: hermes-pi
+entry_point: __init__.py

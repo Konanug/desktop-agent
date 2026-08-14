@@ -288,6 +288,13 @@ class Dispatcher:
             if not isinstance(action.get("command"), list):
                 raise ValueError(f"{key}: 'command' must be a LIST of "
                                  f"arguments, never a shell string")
+        elif kind == "url":
+            u = str(action.get("url") or "")
+            if not u.startswith(("http://", "https://")):
+                raise ValueError(
+                    f"{key}: 'url' must start with http:// or https://. "
+                    f"Anything else is a file or a protocol handler, which is "
+                    f"a different and much larger thing to hand to a room.")
         elif kind == "log":
             pass
         else:
@@ -321,6 +328,15 @@ class Dispatcher:
                 self.kb.combo(parse_combo(action["keys"]))
             elif kind == "text":
                 self.kb.text(action["text"])
+            elif kind == "url":
+                # webbrowser, not `start` -- it opens the DEFAULT browser
+                # without a shell, so a URL can never be interpreted as a
+                # command line however it is punctuated.
+                import webbrowser
+                if self.kb.dry_run:
+                    print(f"  [dry-run] open {action['url']}", flush=True)
+                else:
+                    webbrowser.open(action["url"])
             elif kind == "run":
                 if self.kb.dry_run:
                     print(f"  [dry-run] run {action['command']}", flush=True)

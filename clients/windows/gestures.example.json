@@ -3,8 +3,7 @@
     "Copy to gestures.json and edit. This file is the security boundary for",
     "hermes_gesture.py: anyone standing in front of the Pi's camera can",
     "trigger everything listed here, so keep it to things you would be",
-    "relaxed about a stranger doing. The defaults below are media keys, which",
-    "affect nothing but playback and cannot type into a focused window.",
+    "relaxed about a stranger doing.",
     "",
     "Keys are matched as '<HAND> <GESTURE>' first, then '<GESTURE>' alone.",
     "Hands are LEFT / RIGHT / ? (unlabelled).",
@@ -15,24 +14,65 @@
     "Action types:",
     "  \"ctrl+shift+m\"                      shorthand for a key action",
     "  {\"type\":\"key\",  \"keys\":\"volume_up\"}",
+    "  {\"type\":\"url\",  \"url\":\"https://youtube.com\"}   opens in your browser",
     "  {\"type\":\"text\", \"text\":\"hello\"}     types into the FOCUSED window",
     "  {\"type\":\"log\"}                       prints only -- audition a gesture",
     "  {\"type\":\"run\",  \"command\":[\"notepad.exe\"]}   needs allow_run: true",
     "",
+    "HERMES <NAME> bindings are for things Hermes asks for by voice or Discord",
+    "(\"open gmail\"). The Pi only sends the NAME -- this file decides what it",
+    "does, and a name with no binding here does nothing at all. Hermes cannot",
+    "add one. Delete these lines if you do not want Hermes touching the laptop.",
+    "",
     "Run with --dry-run first. Always."
   ],
-
   "url": "http://192.168.2.56:8081",
   "token": "PASTE_FROM_THE_PI",
-
   "cooldown_s": 1.5,
   "allow_run": false,
-
   "bindings": {
-    "PEACE":      { "type": "key", "keys": "play_pause" },
-    "RIGHT THUMB":{ "type": "key", "keys": "next_track" },
-    "LEFT THUMB": { "type": "key", "keys": "prev_track" },
-    "FIST":       { "type": "key", "keys": "volume_mute" },
-    "OPEN":       { "type": "log" }
+    "PEACE": {
+      "type": "key",
+      "keys": "play_pause"
+    },
+    "OPEN": {
+      "type": "key",
+      "keys": "win+up"
+    },
+    "FIST": {
+      "type": "key",
+      "keys": "win+down"
+    },
+    "RIGHT THUMB": {
+      "type": "key",
+      "keys": "next_track"
+    },
+    "LEFT THUMB": {
+      "type": "key",
+      "keys": "prev_track"
+    },
+    "PINCH": {
+      "type": "log"
+    },
+    "HERMES GMAIL": {
+      "type": "url",
+      "url": "https://mail.google.com"
+    },
+    "HERMES YOUTUBE": {
+      "type": "url",
+      "url": "https://youtube.com"
+    },
+    "HERMES CALENDAR": {
+      "type": "url",
+      "url": "https://calendar.google.com"
+    },
+    "HERMES MAXIMIZE": {
+      "type": "key",
+      "keys": "win+up"
+    },
+    "HERMES MINIMIZE": {
+      "type": "key",
+      "keys": "win+down"
+    }
   }
 }
