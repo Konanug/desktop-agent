@@ -378,6 +378,18 @@ so `hermes_ext/plugins/_argshim.py` reads from both rather than guessing. The
 symptom of getting either wrong is silence at the far end of the pipeline, a
 long way from the schema.
 
+**35. A CLIENT TIMEOUT EQUAL TO THE SERVER'S WAIT IS A COIN TOSS, AND IT
+PRESENTS AS FLAKINESS.** `/snapshot.jpg` deliberately waits `FRAME_WAIT` (5.0 s)
+for a fresh frame before refusing, and the test that pins that behaviour called
+`urlopen(..., timeout=5)`. Which side fired first was decided purely by
+scheduling: on an idle Pi the server won and the test passed, on a loaded
+GitHub runner the client won and it failed with `TimeoutError`. It passed here
+and failed in CI for three commits, including a **docs-only** one — which is
+the tell, because a docs commit cannot break a test. Anything racing a server's
+own timeout must DERIVE its timeout from that constant, not restate the number,
+or raising one silently puts them back in a tie. Reproduce by running the
+module under four spinning cores.
+
 **26. Feeding unrelated stills to a `RunningMode.VIDEO` tracker measures
 nothing.** VIDEO mode carries a track between frames and uses the previous
 frame as a prior, so jump-cutting between different photos breaks it. The
