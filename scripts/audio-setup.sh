@@ -53,12 +53,12 @@ set_ 'Right Output Mixer PCM' on
 # Analog is what moves; the DIGITAL level (Playback) stays high because
 # attenuating in the DAC throws away bits and costs signal-to-noise for
 # nothing. Reduce the amplifier, not the samples.
-LEVEL="${HERMES_SPEAKER_LEVEL:-80}"
+LEVEL="${HERMES_SPEAKER_LEVEL:-100}"
 _pct() { echo $(( $1 * LEVEL / 100 )); }
 
 set_ 'Headphone' "$(_pct 127)"
 set_ 'Speaker'   "$(_pct 127)"
-set_ 'Playback'  245        # near max on purpose -- see above
+set_ 'Playback'  255        # max; digital stays high on purpose -- see above
 
 # CLASS-D BOOST, and the reason the JST speaker was too quiet. `Speaker DC` and
 # `Speaker AC` are the WM8960's own speaker-driver gain and they come up at
@@ -70,11 +70,16 @@ set_ 'Playback'  245        # near max on purpose -- see above
 # At 5/5 into a small driver this WILL clip on loud passages. That is the
 # owner's explicit choice ("crank it to the maximum"); drop both to 3 if it
 # sounds harsh rather than merely loud.
-# 3 rather than 5: at full boost a small driver clips on loud passages, and
-# clipping reads as "harsh" rather than "loud" -- more gain past that point
-# makes it worse, not louder.
-set_ 'Speaker DC' 3
-set_ 'Speaker AC' 3
+# BOTH the volume and this boost were reduced when the level went to 60%,
+# which made it quieter on two counts rather than one -- and the boost is the
+# one that actually moved the needle on the JST speaker. Back at 5.
+#
+# At 5/5 into a small driver, loud passages WILL clip, and clipping reads as
+# harsh rather than loud. If it sounds strained rather than just loud, this is
+# the knob: HERMES_SPEAKER_BOOST=3.
+BOOST="${HERMES_SPEAKER_BOOST:-5}"
+set_ 'Speaker DC' "$BOOST"
+set_ 'Speaker AC' "$BOOST"
 
 # CAPTURE. The two mics are the point of this HAT, and this block is the
 # difference between them working and not.
@@ -102,8 +107,20 @@ set_ 'Speaker AC' 3
 # is already ample.
 set_ 'Left Input Mixer Boost'    on
 set_ 'Right Input Mixer Boost'   on
-set_ 'Left Input Boost Mixer LINPUT1'  0
-set_ 'Right Input Boost Mixer RINPUT1' 0
+# LEFT AT 0, AND THE ATTEMPT TO RAISE IT IS WHY.
+#
+# Analog gain lifts signal and noise together, so it does not make speech
+# easier to pick out -- it only helps if the signal was too quiet for the
+# recogniser, and at boost 0 it was not. Tried at 1 and MEASURED: the room
+# floor went 178 -> 605, which pushed the start threshold into its 900 ceiling
+# and collapsed the hysteresis gap from 1.7x to 1.15x. More gain made the gate
+# LESS able to tell speech from the room, which is the opposite of sensitive.
+#
+# Sensitivity comes from the thresholds instead -- they are multiples of the
+# measured floor, so they follow the room rather than a fixed level.
+BOOST_IN="${HERMES_MIC_BOOST:-0}"
+set_ 'Left Input Boost Mixer LINPUT1'  "$BOOST_IN"
+set_ 'Right Input Boost Mixer RINPUT1' "$BOOST_IN"
 set_ 'Capture'   63
 # A high-pass filter costs nothing and removes the DC/rumble that otherwise
 # sits under everything the wake word sees.

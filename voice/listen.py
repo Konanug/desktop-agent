@@ -275,11 +275,17 @@ class Endpointer:
         # makes the endpointer deaf, and a deaf endpointer fails silently --
         # the wake fires, nothing registers, and the only symptom is "nothing
         # usable captured". Observed at 3501 in a room measuring 250.
-        self.start_threshold = min(max(floor * 2.2, 110.0), 900.0)
+        # 1.8x, lowered from 2.2. The GATE LOGIC IS UNCHANGED -- still strict
+        # to start, loose to continue, still ceilinged -- this only moves where
+        # "clearly a voice" sits, so ordinary and slightly distant speech
+        # registers without shouting. Both thresholds are multiples of the
+        # measured floor, so raising the mic gain does not make this fire on
+        # room noise: the floor rises with it.
+        self.start_threshold = min(max(floor * 1.8, 90.0), 900.0)
         # Continue is deliberately near the floor: between words the level
         # genuinely falls to near-silence, and SILENCE_END is what decides the
         # turn is over -- not this.
-        self.continue_threshold = max(floor * 1.15, 60.0)
+        self.continue_threshold = max(floor * 1.05, 45.0)
 
     @property
     def threshold(self) -> float:
