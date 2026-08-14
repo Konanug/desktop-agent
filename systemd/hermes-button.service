@@ -1,0 +1,17 @@
+[Unit]
+Description=Hermes Pi Button - hold GPIO17 to toggle a terminal onto the screen
+Documentation=file:///home/alanmyin/projects/hermes-pi/docs/RUNBOOK.md
+After=default.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/alanmyin/projects/hermes-pi/scripts/button-watch.py
+Restart=always
+RestartSec=3
+Nice=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

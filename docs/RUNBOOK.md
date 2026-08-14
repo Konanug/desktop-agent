@@ -8,6 +8,46 @@ units** (`hermes-fbcon-detach`, journald config).
 
 ---
 
+## Locked out? Get a terminal on the screen
+
+The panel takes the whole screen and `hermes-fbcon-detach` unbinds the console,
+so there is **no login prompt behind it**. That is correct in normal use and a
+serious problem the first time the network drops and you cannot SSH in either.
+
+Two ways out. **Both are entirely local** — no agent, no internet — because the
+situation they exist for is exactly that those are gone:
+
+| | |
+|---|---|
+| **Say it** | "hey jarvis" → **"open terminal"** *(as a complete sentence, nothing else)* |
+| **Hold it** | The button on the ReSpeaker HAT, **3 seconds** |
+
+Either puts a login prompt on the screen. Say **"close terminal"** or hold the
+button again to bring the panel back.
+
+The spoken form is handled by `voice/local.py` **before** the transcript ever
+reaches Hermes — it is not a tool call and does not need the model. It requires
+the phrase to be the *whole* utterance, so "can you open terminal for me" does
+nothing; that is what stops it firing by accident, or off the television.
+
+The button is the one that survives a broken microphone. It needs an unbroken
+3-second hold, so a bounce or a knock while plugging something in cannot
+accumulate into a trigger.
+
+By hand, over SSH:
+
+```bash
+~/projects/hermes-pi/scripts/console-mode.sh on      # terminal
+~/projects/hermes-pi/scripts/console-mode.sh off     # panel back
+~/projects/hermes-pi/scripts/console-mode.sh status
+```
+
+**Do not** get out of it by masking `hermes-fbcon-detach` or editing
+`cmdline.txt`. Masking writes over the unit file at the same path, so unmasking
+later *deletes* it — recovered here only because `systemd/` is in git.
+
+---
+
 ## Is it healthy?
 
 ```bash

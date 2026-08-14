@@ -1,56 +1,110 @@
 # Hermes Pi
 
-A persistent physical AI assistant running on a Raspberry Pi 5.
+A persistent physical AI assistant on a Raspberry Pi 5 — it **sees, hears and
+speaks**, and shows you what it is doing on a small panel.
 
-[Hermes Agent](https://hermes-agent.nousresearch.com/) (Nous Research) is the assistant runtime.
-This repo holds only what sits *around* it: a framebuffer display renderer, the integration code that
-feeds it real agent state, and the service definitions that keep the whole thing alive unattended.
+[Hermes Agent](https://hermes-agent.nousresearch.com/) (Nous Research) is the
+assistant runtime. This repo is everything *around* it: the display renderer,
+the camera and microphone services, the integration that feeds it real agent
+state, and the units that keep it alive unattended. Nothing here forks or
+patches Hermes — integration is through its documented extension points.
 
-Hermes itself is installed and updated normally, and lives in `~/.hermes/`. Nothing here forks or
-patches it — integration happens through Hermes' documented extension points.
+```
+Discord ─┐                                    ┌─► HDMI panel (live agent state)
+         ├─► Hermes Agent ─── plugins ────────┼─► camera  (it can look)
+voice  ──┘   (ChatGPT sub)                    ├─► speaker (it answers aloud)
+                                              └─► Gmail / Calendar (read-only)
+camera ──► hand tracking ──► gesture edges ──────► your laptop (media keys)
+```
 
-## What it does
+## What it actually does
 
-- Runs continuously on the Pi as a systemd user service
-- Reached over **Discord** from any device, restricted to an explicit user allowlist
-- Uses a **ChatGPT subscription** for inference via Hermes' Codex App-Server runtime — no billed API key
-- Drives a 3.5" SPI panel with a reactive animated visual showing what the agent is actually doing
+- **Reached over Discord** from any device, restricted to an explicit allowlist
+- **Answers out loud.** Say "hey jarvis", ask a question, hear the answer —
+  wake word, speech-to-text and speech synthesis all run **locally on the Pi**
+- **Sees.** Ask what it can see and it looks through the camera and answers
+  from the actual pixels
+- **Reads your mail and calendar**, read-only, enforced by OAuth scope
+- **Hand gestures** drive media keys on a Windows laptop over the LAN
+- **A panel that never lies** about what the agent is doing
 
-Voice, camera, and sensors are deferred to a later phase — see `docs/ROADMAP.md` for the seams they
-attach to.
+Inference runs on a **ChatGPT subscription** — no API key, nothing billed.
 
-## Architecture in one line
+## The one rule
 
-Two supervised processes: **Hermes** (with our hook and plugin running in-process) and the
-**display renderer**, communicating through an atomic JSON state file on tmpfs. Either can crash and
-restart without taking the other down.
+**The panel never invents state.** Every pixel traces to a real Hermes event or
+to something the renderer observed itself. When the state file and the system
+disagree, observation wins — `state.json` is an assertion by a process that may
+be dead; `systemctl is-active` is a fact.
 
-See `docs/ARCHITECTURE.md` for the full design and `docs/DECISIONS.md` for why each choice was made.
+That rule generalises through the whole project, and most of the interesting
+bugs in `docs/` are cases where something asserted a thing it had not checked.
+
+## Hardware
+
+| | |
+|---|---|
+| Host | Raspberry Pi 5, Debian 13 (trixie), aarch64, 8 GB |
+| Panel | Waveshare 3.5" HDMI LCD — **physically 480×320**, driven at **800×480** (see below) |
+| Camera | Camera Module 3 (imx708), via `picamera2` |
+| Audio | ReSpeaker 2-Mic Pi HAT (WM8960) — two mics and a speaker |
+
+**About the resolution, because it looks contradictory and is not.** The panel
+is physically 480×320. HDMI *cannot carry* that: 480×320@60 needs an 11.6 MHz
+pixel clock and the HDMI minimum is 25 MHz, so the driver rejects it outright.
+640×480 is also too low at 23.2 MHz. **800×480 (29 MHz) is the smallest mode
+that can physically be transmitted**, so that is what is sent, and the panel's
+own scaler fits it to its 480×320 glass. The renderer pre-compensates for that
+non-square scaling so circles come out round.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
-| `display/` | The framebuffer renderer. `panel.py` is the only hardware-specific file. |
-| `tools/` | Build-time helpers: animation frame generation, SPI throughput benchmarking. |
-| `hermes_ext/` | Code installed *into* `~/.hermes/` — the state hook and the display plugin. |
-| `systemd/` | Service unit and drop-in templates. |
-| `config/` | Non-secret configuration. |
-| `assets/` | Fonts, and generated animation packs. |
-| `scripts/` | Install, uninstall, status, baseline capture. |
-| `docs/` | Architecture, runbook, hardware snapshot, decisions, roadmap. |
+| `display/` | Framebuffer renderer. `panel.py` is the only hardware-specific file. |
+| `camera/` | Sensor owner: capture, MJPEG stream, hand tracking, gesture edges. |
+| `voice/` | Microphone owner: wake word, transcription, speech. |
+| `hermes_ext/` | Plugins installed *into* `~/.hermes/` — display, camera, voice, Google, laptop. |
+| `clients/windows/` | Gesture client for a Windows laptop. Stdlib only. |
+| `tools/` | Animation generation, gesture training, voice auditioning, calibration. |
+| `scripts/` | Install and setup, and the console escape hatch. |
+| `tests/` | 11 modules, each runnable as plain `python3`. |
+| `docs/` | Architecture, runbook, security, and the measurements behind each choice. |
 
-Secrets live in `~/.hermes/.env` and `~/.codex/auth.json` (both `0600`) and are **never** stored here.
+## Getting out of it
 
-## Hardware
+The panel takes the whole screen and there is no login prompt behind it, which
+is a problem the first time the network drops. Two escape hatches, both
+**entirely local** — neither needs the agent or the internet, because the
+situation they exist for is precisely that those are gone:
 
-Raspberry Pi 5, Debian 13 (trixie), aarch64. Display is a 3.5" **ILI9486** SPI TFT at 480×320 RGB565
-on `/dev/fb0` (`dtoverlay=tft35a`), with an ADS7846 resistive touchscreen currently unused.
+- Say **"hey jarvis"**, then **"open terminal"** as a complete sentence
+- Or **hold the button on the HAT for three seconds**
 
-There is no GPU — `/dev/dri` is absent — so all rendering is software and SPI bandwidth is the binding
-constraint on animation. `docs/HARDWARE.md` is a captured snapshot of the real machine, regenerated by
-`scripts/baseline-capture.sh`.
+Both put a login prompt on the screen. "close terminal" or another long hold
+brings the panel back. See `docs/RUNBOOK.md`.
+
+## Docs
+
+| | |
+|---|---|
+| `docs/ARCHITECTURE.md` | the shape, and why |
+| `docs/RUNBOOK.md` | operating and repairing it |
+| `docs/SECURITY.md` | threat model, stated honestly |
+| `docs/HARDWARE.md` | measured facts the design rests on |
+| `docs/CAMERA.md` · `GESTURES.md` · `VOICE.md` · `GOOGLE.md` | per-subsystem |
+| `docs/DECISIONS.md` · `DEFERRED.md` | why, and what is knowingly not done |
+
+`CLAUDE.md` carries the traps — the mistakes already made here, with the
+measurements that exposed them. It is the most useful file in the repo.
+
+## Secrets
+
+None are in this repo, and `.gitignore` covers them by name: Discord bot token,
+ChatGPT OAuth, Google OAuth, the camera stream token, and the webhook HMAC
+secret all live under `~/.hermes/` or `~/.config/hermes-pi/`, mode `0600`.
 
 ## Status
 
-Under construction. See the phased plan in `docs/` for what is built and what is next.
+Working and in daily use. Built in phases; every performance number in the docs
+came from a measurement on this machine, not an estimate.

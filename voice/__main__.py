@@ -34,7 +34,7 @@ import time
 
 import numpy as np
 
-from . import listen, protocol, sink, speak
+from . import listen, local, protocol, sink, speak
 
 POLL_SPEAK = 0.25       # how often to check for something to say
 STATUS_PERIOD = 1.0
@@ -279,6 +279,21 @@ class Service:
         print(f"[voice] {secs:.1f}s audio -> {len(text)} chars "
               f"in {self.stt.last_ms:.0f}ms", flush=True)
         if not text:
+            self.end_turn()
+            return
+
+        # LOCAL COMMANDS FIRST, before the rate limit and before the network.
+        # These are the escape hatch, and it must work when the agent cannot be
+        # reached at all -- which is the situation it exists for. Not rate
+        # limited either: being told "too many requests" while locked out of
+        # your own machine would be absurd.
+        cmd = local.match(text)
+        if cmd is not None:
+            arg, reply = cmd
+            print(f"[voice] LOCAL COMMAND: {arg} (no agent, no network)",
+                  flush=True)
+            local.run(arg)
+            self.speaker.say(reply)
             self.end_turn()
             return
 

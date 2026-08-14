@@ -1,5 +1,22 @@
 # Hardware & System Baseline
 
+## Resolution, definitively
+
+**The panel is physically 480×320. The framebuffer is 800×480. Both are true.**
+
+HDMI cannot carry 480×320: at 60 Hz it needs an ~11.6 MHz pixel clock and the
+HDMI minimum is 25 MHz, so vc4 rejects the mode with `User-defined mode not
+supported`. 640×480 fails the same test at ~23.2 MHz. **800×480 (~29 MHz) is
+the smallest transmittable mode**, and it is the panel's own preferred entry in
+the no-EDID fallback list. The panel scales it to its 480×320 glass.
+
+So: `video=HDMI-A-1:800x480@60D` in `cmdline.txt`, `/dev/fb0` reports 800×480,
+and `tools/render_frames.py` pre-compensates the non-square scaling
+(`PIXEL_ASPECT`) so circles arrive round. Anything claiming 480×320 as the
+framebuffer size is describing the pre-2026-08-06 SPI panel.
+
+---
+
 > ## ⚠ The SPI panel described below was REMOVED on 2026-08-06
 >
 > It was replaced by a **Waveshare HDMI LCD at 800x480 RGB565**, driven through

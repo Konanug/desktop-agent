@@ -100,7 +100,7 @@ Rebuild: `python3 tools/render_frames.py --out assets/anim` (~5 min).
 | Audio | ReSpeaker 2-Mic Pi HAT (WM8960, I2C 0x1a + I2S). ALSA card `wm8960soundcard`, **excluded from WirePlumber** so nothing fights the mixer. Mixer set by `hermes-audio.service`, verified across a reboot. **`Input Mixer Boost` is the switch that connects the mics at all** — off by default, and with it off the ADC returns flat silence however correct every other control looks. Mics now genuinely live (ambient rms 178 vs 0.98). **Speaker output still never confirmed — nothing plugged in** |
 | Hermes | v0.20.0 at `~/.hermes/`, `hermes` on PATH |
 | Model | `openai-codex/gpt-5.6-terra`; auxiliary → `gpt-5.6-luna` |
-| Services | `hermes-gateway`, `hermes-display`, `hermes-camera`, `hermes-usage`, `hermes-audio`, `hermes-voice` (user) · `hermes-fbcon-detach` (system) |
+| Services | `hermes-gateway`, `hermes-display`, `hermes-camera`, `hermes-usage`, `hermes-audio`, `hermes-voice`, `hermes-button` (user) · `hermes-fbcon-detach` (system) |
 | Runtime state | `/run/user/1000/hermes-display/{state.json,request.json,images/}` |
 | Network | LAN only, `192.168.2.56`. Two network-facing sockets: **22** (ssh) and **8081** (camera live view, token-gated). |
 
@@ -357,6 +357,13 @@ status writer, far from the value's origin, and only when that field is
 non-zero. `tests/test_hands.py` already pinned this for the camera and the
 lesson still had to be relearned — coerce with `float()` at the publishing
 boundary, not per field.
+
+**34. `systemctl mask` on a unit stored in `/etc/systemd/system/` DESTROYS IT.**
+Masking writes a symlink to `/dev/null` at that exact path, over the real file.
+Unmasking then removes the symlink and the unit is simply gone —
+`hermes-fbcon-detach` came back only because `systemd/` is committed. Mask
+units that ship with the OS; for our own, `systemctl disable` is the reversible
+one.
 
 **33. A tool schema wrapped in the OpenAI `{"type":"function","function":{…}}`
 envelope REGISTERS FINE AND SILENTLY LOSES ITS PARAMETERS.** Hermes'
@@ -624,3 +631,9 @@ without being asked. What was learned and is worth keeping:
 | `docs/GESTURES.md` | edges, the `/events` wire, and the Windows client |
 | `docs/VOICE.md` | wake word, STT, the narrowed webhook lane, the mic light |
 | `docs/GOOGLE.md` | Gmail/Calendar, read-only scopes, the typed-consent rule |
+
+**ESCAPE HATCH.** The panel hides the console, so if the network drops there is
+no terminal and no SSH. Say **"open terminal"** after the wake word, or hold the
+HAT button 3 s. Both are handled LOCALLY (`voice/local.py`, `scripts/button-watch.py`)
+and never touch Hermes — the agent is a cloud call and is dead in exactly that
+situation. `scripts/console-mode.sh` is the same thing by hand.

@@ -31,3 +31,15 @@ venv/
 google-client-secret.json
 google-token.json
 send-consent-phrase
+
+# ── Belt and braces for a PUBLIC repo ──────────────────────────────────
+# These live outside the tree by design (~/.hermes, ~/.config/hermes-pi),
+# but a stray copy pasted in for debugging must never be committable.
+*client_secret*.json
+*google-token*.json
+*-token
+*.secret
+send-consent-phrase
+gestures.json
+!clients/windows/gestures.example.json
+asound.state
