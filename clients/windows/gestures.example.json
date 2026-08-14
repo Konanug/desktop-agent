@@ -17,6 +17,8 @@
     "  {\"type\":\"url\",  \"url\":\"https://youtube.com\"}   opens in your browser",
     "  {\"type\":\"app\",  \"app\":\"spotify\"}    launches the DESKTOP app --",
     "      the app list is CLOSED and lives in hermes_gesture.py, not here",
+    "  {\"type\":\"spotify\", \"uri\":\"spotify:album:<22-char id>\"}  plays it",
+    "      Spotify: right-click -> Share -> Copy Spotify URI",
     "  {\"type\":\"text\", \"text\":\"hello\"}     types into the FOCUSED window",
     "  {\"type\":\"log\"}                       prints only -- audition a gesture",
     "  {\"type\":\"run\",  \"command\":[\"notepad.exe\"]}   needs allow_run: true",
@@ -127,6 +129,10 @@
     "HERMES MUTE": {
       "type": "key",
       "keys": "volume_mute"
+    },
+    "HERMES RUMOURS": {
+      "type": "spotify",
+      "uri": "spotify:album:4aawyAB9vmqN3uQ7FjRGTy"
     }
   }
 }

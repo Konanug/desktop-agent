@@ -52,6 +52,7 @@ import argparse
 import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -90,6 +91,25 @@ READ_TIMEOUT = 30.0
 APPS = {
     "spotify": "spotify:",
 }
+
+# Spotify CONTENT a binding may open, e.g. spotify:album:4aawyAB9vmqN3uQ7FjRGTy.
+#
+# This is the one place a config supplies a URI, and it is allowed only because
+# the shape is pinned to the point where there is nothing to smuggle: a fixed
+# scheme, a fixed set of kinds, and a base62 id of exactly 22 characters. No
+# query string, no path, no free text, no arguments. The worst thing a person
+# standing in front of the camera can do with it is play music.
+#
+# Contrast the general case, which stays refused: "open this URI" would reach
+# every protocol handler installed on the machine. "Play this Spotify id" does
+# not generalise to that, which is why it gets its own action type instead of
+# being a relaxation of "url" or a second field on "app".
+#
+# Get an id from Spotify: right-click a track/album/playlist -> Share ->
+# Copy Spotify URI. (Copy Link gives a https://open.spotify.com/<kind>/<id>
+# URL; the id is the same 22 characters.)
+SPOTIFY_URI = re.compile(
+    r"^spotify:(album|playlist|track|artist|show|episode):[0-9A-Za-z]{22}$")
 
 
 # -- input synthesis -------------------------------------------------------
@@ -321,6 +341,15 @@ class Dispatcher:
                     f"{', '.join(sorted(APPS))}. That is the point -- a config "
                     f"cannot name an arbitrary protocol handler, so the worst "
                     f"a gesture can reach is one of these.")
+        elif kind == "spotify":
+            u = str(action.get("uri") or "").strip()
+            if not SPOTIFY_URI.match(u):
+                raise ValueError(
+                    f"{key}: 'uri' must be exactly spotify:<kind>:<22-char id> "
+                    f"-- got {u!r}. Kinds: album, playlist, track, artist, "
+                    f"show, episode. In Spotify: right-click -> Share -> "
+                    f"Copy Spotify URI.")
+            action = dict(action, uri=u)
         elif kind == "log":
             pass
         else:
@@ -348,6 +377,23 @@ class Dispatcher:
             if key in self.bindings:
                 return key, self.bindings[key]
         return None, None
+
+    def _open(self, uri: str) -> bool:
+        """Hand a NON-http URI to the shell, the way a double-click would.
+
+        os.startfile, not webbrowser: webbrowser hands the string to the
+        default BROWSER, which is the wrong program for a custom scheme and may
+        drop it silently -- that is exactly why 'open spotify' kept landing on
+        the web player. No shell string is built, so there is nothing to quote.
+        """
+        if self.kb.dry_run:
+            print(f"  [dry-run] launch {uri}", flush=True)
+            return True
+        if not hasattr(os, "startfile"):
+            print("  ! this action needs Windows (no os.startfile)", flush=True)
+            return False
+        os.startfile(uri)                      # type: ignore[attr-defined]
+        return True
 
     def fire(self, ev: dict) -> bool:
         key, action = self.lookup(ev.get("hand", "?"), ev.get("gesture", ""))
@@ -385,14 +431,12 @@ class Dispatcher:
                 # shell's own "open this the way the system would", which is
                 # what launches the registered desktop app. No shell string is
                 # built, so there is nothing to quote or escape.
-                uri = APPS[str(action["app"]).strip().lower()]
-                if self.kb.dry_run:
-                    print(f"  [dry-run] launch {uri}", flush=True)
-                elif hasattr(os, "startfile"):
-                    os.startfile(uri)          # type: ignore[attr-defined]
-                else:
-                    print(f"  ! app actions need Windows (no os.startfile)",
-                          flush=True)
+                if not self._open(APPS[str(action["app"]).strip().lower()]):
+                    return False
+            elif kind == "spotify":
+                # Opens the desktop app AND starts playback of that item. The
+                # app must already be installed; Windows resolves the scheme.
+                if not self._open(action["uri"]):
                     return False
             elif kind == "run":
                 if self.kb.dry_run:

@@ -598,6 +598,36 @@ def test_an_app_action_cannot_name_an_arbitrary_uri():
         raise AssertionError(f"app {bad!r} was accepted; the table is not closed")
 
 
+def test_a_spotify_uri_is_pinned_to_a_content_id():
+    """THE ONE PLACE A CONFIG SUPPLIES A URI, AND WHY IT IS SAFE TO.
+
+    Playing a named album needs an id, so this action cannot use the closed
+    APPS table. It is allowed only because the shape is pinned until there is
+    nothing to smuggle: fixed scheme, fixed kinds, base62 id of exactly 22
+    characters, and no query, path or trailing text. "Play this Spotify id"
+    does not generalise to "open this URI" -- that stays refused.
+    """
+    import hermes_gesture as hg
+    kb = hg.Keyboard(dry_run=True)
+    good = "spotify:album:4aawyAB9vmqN3uQ7FjRGTy"
+    d = hg.Dispatcher({"url": "http://x", "bindings": {
+        "HERMES RUMOURS": {"type": "spotify", "uri": good}}}, kb)
+    assert d.lookup("HERMES", "RUMOURS")[1]["uri"] == good
+
+    for bad in ("spotify:album:short",                  # wrong length
+                "spotify:evil:4aawyAB9vmqN3uQ7FjRGTy",  # kind not in the set
+                good + "?autoplay=1",                   # query appended
+                good + " && calc",                      # trailing anything
+                "spotify:album:4aawyAB9vmqN3uQ7FjRGT/",  # non-base62
+                "file:///C:/Windows", "spotify:", ""):
+        try:
+            hg.Dispatcher({"url": "http://x", "bindings": {
+                "HERMES X": {"type": "spotify", "uri": bad}}}, kb)
+        except ValueError:
+            continue
+        raise AssertionError(f"spotify uri {bad!r} was accepted")
+
+
 def test_the_url_action_still_refuses_protocol_handlers():
     """Regression guard on the boundary the 'app' table exists to preserve."""
     import hermes_gesture as hg
