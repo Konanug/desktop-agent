@@ -546,6 +546,33 @@ def run(cfg: dict, disp: Dispatcher, once: bool = False) -> int:
         backoff = min(BACKOFF_MAX, backoff * 2)
 
 
+def _open_log(path: str | None) -> None:
+    """Give this program somewhere to speak when it has no console.
+
+    Under pythonw.exe -- which is how it runs unattended, and the whole point
+    of running it that way -- sys.stdout is None. CPython's print() then
+    SILENTLY DOES NOTHING: not an error, not a warning, just nothing. So every
+    diagnostic this client is careful to produce ("403 forbidden", "no
+    binding", "action failed") is discarded exactly in the configuration where
+    nobody is watching to notice it stopped.
+
+    Default location is %LOCALAPPDATA% rather than beside the script, because
+    the script may sit somewhere the user cannot write.
+    """
+    if path is None:
+        if sys.stdout is not None:
+            return                              # a console: leave it alone
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        path = os.path.join(base, "hermes-gesture.log")
+    try:
+        f = open(path, "a", encoding="utf-8", buffering=1)   # line buffered
+    except OSError:
+        return                                  # never fail to start over a log
+    sys.stdout = sys.stderr = f
+    print(f"\n--- started {time.strftime('%Y-%m-%d %H:%M:%S')} "
+          f"pid={os.getpid()} ---", flush=True)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="hermes_gesture",
@@ -556,7 +583,12 @@ def main(argv=None) -> int:
                          "Run this first, every time you change bindings.")
     ap.add_argument("--once", action="store_true",
                     help="do not reconnect; exit when the stream ends")
+    ap.add_argument("--log", default=None, metavar="PATH",
+                    help="append output here. Implied when there is no "
+                         "console (pythonw.exe), where output otherwise "
+                         "vanishes silently.")
     args = ap.parse_args(argv)
+    _open_log(args.log)
 
     path = os.path.abspath(args.config)
     try:
