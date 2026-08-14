@@ -59,13 +59,20 @@ MIN_UTTERANCE = 0.4     # shorter than this is a cough, not a request
 
 # If NOTHING is said in this long after a wake, give up immediately.
 #
+# Raised 2.0 -> 4.5. Two seconds is how long it takes to gather a thought, so
+# it was abandoning the turn while the person was still deciding what to ask --
+# reported as "it responds to hey jarvis then goes back to idle immediately",
+# which is exactly what that looks like from outside. The cost of being
+# generous is bounded: nothing was said, so nothing is transcribed or sent, and
+# MAX_UTTERANCE still caps the whole capture.
+#
 # This is the difference between a false wake costing 2 s and costing the full
 # ceiling. The first version only ended a capture once speech had been heard
 # ("quiet_for >= SILENCE_END and spoke_for > 0"), so a wake word that fired on
 # a television with nobody in the room recorded until MAX_UTTERANCE -- the
 # cheapest case was accidentally the most expensive. Reported as the mic being
 # "left on way after I intended", and that was exactly right.
-LEAD_SILENCE = 2.0
+LEAD_SILENCE = float(os.environ.get("HERMES_VOICE_LEAD", "4.5"))
 PREROLL = 0.5           # audio kept from BEFORE the wake word fired, so the
                         # first syllable after it is never clipped
 

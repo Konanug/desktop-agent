@@ -97,6 +97,34 @@
     "HERMES NEXT_DESKTOP": {
       "type": "key",
       "keys": "ctrl+win+right"
+    },
+    "HERMES PLAY": {
+      "type": "key",
+      "keys": "play_pause"
+    },
+    "HERMES PAUSE": {
+      "type": "key",
+      "keys": "play_pause"
+    },
+    "HERMES NEXT": {
+      "type": "key",
+      "keys": "next_track"
+    },
+    "HERMES PREVIOUS": {
+      "type": "key",
+      "keys": "prev_track"
+    },
+    "HERMES VOLUME_UP": {
+      "type": "key",
+      "keys": "volume_up"
+    },
+    "HERMES VOLUME_DOWN": {
+      "type": "key",
+      "keys": "volume_down"
+    },
+    "HERMES MUTE": {
+      "type": "key",
+      "keys": "volume_mute"
     }
   }
 }

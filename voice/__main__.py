@@ -103,6 +103,8 @@ class Service:
         self.floor = listen.NoiseFloor()
         self.capped = 0             # captures that ran to the ceiling
         self.capture_started = 0.0
+        self.last_capture_peak = 0.0
+        self.last_spoke_for = 0.0
 
     # -- status ---------------------------------------------------------
     def status_doc(self) -> dict:
@@ -187,6 +189,7 @@ class Service:
         # through while claiming it had stopped in time. What is being limited
         # here is how long the microphone recorded, so that is what is counted.
         captured = 0.0
+        heard_peak = 0.0        # the loudest frame DURING this capture
         while True:
             if captured >= protocol.MAX_UTTERANCE:
                 capped = True
@@ -196,6 +199,7 @@ class Service:
                 return None
             frames.append(f)
             captured += per_frame
+            heard_peak = max(heard_peak, listen.frame_rms(f))
             if self.ends is not None and self.ends.is_speech(f):
                 quiet_for = 0.0
                 spoke_for += per_frame
@@ -220,6 +224,12 @@ class Service:
                   f"ceiling (threshold {self.ends.threshold:.0f}, room "
                   f"{self.floor.value():.0f}) -- ending anyway", flush=True)
         self.capture_started = 0.0
+        # Published so the failure message can report what THIS capture heard,
+        # not what the microphone happened to peak at beforehand -- which was
+        # the wake word, and made "loudest heard 1017" look like the threshold
+        # was met when the capture had in fact heard almost nothing.
+        self.last_capture_peak = heard_peak
+        self.last_spoke_for = spoke_for
         if spoke_for < protocol.MIN_UTTERANCE:
             return None                     # a cough, or a false wake
         return np.concatenate(frames) if frames else None
@@ -262,10 +272,12 @@ class Service:
             # WITH THE NUMBERS. "nothing usable captured" on its own gives no
             # way to tell a silent room from a threshold set too high, and
             # those need opposite fixes.
-            th = self.ends.threshold if self.ends else 0.0
+            th = self.ends.start_threshold if self.ends else 0.0
             print(f"[voice] nothing usable captured "
-                  f"(speech needed >{th:.0f}, room {self.floor.value():.0f}, "
-                  f"loudest heard {self.level_peak:.0f})", flush=True)
+                  f"(needed >{th:.0f} for {protocol.MIN_UTTERANCE:.1f}s; "
+                  f"heard {getattr(self, 'last_capture_peak', 0):.0f} peak, "
+                  f"{getattr(self, 'last_spoke_for', 0):.2f}s of speech, "
+                  f"room {self.floor.value():.0f})", flush=True)
             self.end_turn()
             return
 

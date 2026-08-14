@@ -243,6 +243,7 @@ class Service:
             "hands_ms": round(self.tracker.mean_ms, 1),
             # Counts and a cursor are STATE. What the gesture WAS is content
             # and lives on /events, which is the same split as hands.json.
+            "always_on": protocol.ALWAYS_ON,
             "gestures_enabled": self.gestures_enabled,
             "gesture_cursor": self.gate.log.cursor,
             "gestures_fired": self.gate.fired,
@@ -791,7 +792,11 @@ def main(argv: list[str] | None = None) -> int:
 
         svc.pump_frames(now)
 
-        if (svc.sensor.is_open and not live
+        if protocol.ALWAYS_ON and not svc.sensor.is_open:
+            if now - svc._last_wake_try > 2.0:
+                svc._last_wake_try = now
+                svc.ensure_awake()
+        elif (svc.sensor.is_open and not live and not protocol.ALWAYS_ON
                 and now - svc.last_request > svc.idle_timeout):
             svc.sleep_sensor()
 

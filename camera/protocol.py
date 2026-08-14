@@ -88,6 +88,22 @@ import os as _os
 FRAME_DURATION_LIMITS = (
     33333, int(_os.environ.get("HERMES_CAMERA_MAX_EXPOSURE_US", "100000")))
 
+# ALWAYS-ON. Off by default, and that default is a deliberate position rather
+# than caution: a camera that sleeps when nothing needs it is the difference
+# between "it can look when asked" and "it is watching the room", and the panel
+# indicator, the viewer count and the whole lazy lifecycle exist to make the
+# first one legible.
+#
+# With this on, the sensor stays open and the CAM light stays lit permanently.
+# That is honest -- the light follows the kernel's power state, so it cannot be
+# on without saying so -- but it is a different thing to live with, so it is an
+# explicit choice.
+#
+# What it buys: no ~434 ms cold wake before a look, and motion in status.json
+# stays current. What it costs: the sensor is powered continuously.
+ALWAYS_ON = _os.environ.get("HERMES_CAMERA_ALWAYS_ON", "off").lower() in (
+    "on", "1", "yes", "true")
+
 # How long the sensor stays open after the last request. Cold wake measured at
 # ~434 ms, so this is not about hiding latency -- it is about not reopening the
 # sensor for a natural follow-up question, while still closing it within a
