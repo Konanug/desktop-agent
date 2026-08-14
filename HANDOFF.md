@@ -1,167 +1,127 @@
-# Handoff — overnight batch, 2026-08-08
+# Handoff
 
-All seven tasks worked. **Five are done and running. Two need you**, and one of
-those is a security decision you should look at with fresh eyes.
-
-Commit: `bd7825b`. All 10 test modules pass. Six services active. **No reboot
-was done**, as asked.
+Everything asked for is done. **Nothing needs your input to keep working** —
+the items at the bottom are optional or need your hands.
 
 ---
 
-## ⚠ Read this first: the voice lane now has a shell
+## ⚠ One thing to know before you next get stuck
 
-You asked why voice could not do what Discord could. It was my doing — I
-narrowed that lane on purpose and flagged it at the time. You have now asked
-twice, so **voice has full tool parity with Discord, including `terminal`**.
-Verified: a spoken request ran the terminal tool and answered in 10.8 s.
+**The way you escaped last time destroyed a unit file.** `systemctl mask` on
+`hermes-fbcon-detach` wrote a `/dev/null` symlink *over* the real file at the
+same path, so unmasking it deleted the unit. It came back only because
+`systemd/` is committed to git.
 
-What that means, stated plainly one more time so it is your decision and not a
-thing that drifted:
+Don't do it that way again — you now have two proper escape hatches.
 
-> **A microphone authenticates nobody.** Anything audible in that room — a
-> podcast, a television, a guest, a video call on a speaker — can now reach an
-> agent that has a shell as `alanmyin`, plus your camera and (once connected)
-> your email.
+## Getting a terminal when you are locked out
 
-Still in place: 3 s minimum gap, 6/minute, 60/hour, the `MIC` light, one wake
-per utterance, and no transcript ever logged.
-
-**To put it back to the restricted lane** (camera, display, memory, vision, web
-— no shell), one command:
-
-```bash
-python3 - <<'EOF'
-import pathlib, yaml
-p = pathlib.Path.home()/".hermes/config.yaml"; c = yaml.safe_load(p.read_text())
-c["platform_toolsets"]["webhook"] = c["platform_toolsets"]["_webhook_restricted_backup"]
-p.write_text(yaml.safe_dump(c, sort_keys=False))
-EOF
-systemctl --user restart hermes-gateway
-```
-
-The previous list is kept in the config as `_webhook_restricted_backup` for
-exactly this.
-
----
-
-## ✅ Gmail + Calendar — CONNECTED and verified
-
-Tested against your real account: unread count, calendar agenda and search all
-return live data. Scopes granted are `gmail.readonly` + `calendar.readonly`
-only, token stored `0600`.
-
-### Your email rule is enforced
-
-> Never send an email without direct permission — typed, never spoken, specific
-> phrase, correct syntax.
-
-**Today sending is impossible, not merely disallowed.** Proven, not assumed:
-
-```
-send REFUSED by Google: HTTP 403  "Request had insufficient authentication scopes"
-```
-
-No send tool exists either, and `tests/test_send_consent.py` asserts both — so
-adding one by accident fails the suite.
-
-If send is ever wanted, three layers already enforce your rule:
-
-1. **Scope** — a readonly token cannot send. Adding it needs a new Google
-   consent screen, itself a typed act by you.
-2. **Structure** — a send tool must live in a toolset absent from
-   `platform_toolsets.webhook`, so **the voice lane cannot see it**. This is
-   what makes "typed, not spoken" real: a tool handler *cannot* tell which
-   platform called it, so a runtime check would be a guess. There is nothing to
-   refuse because there is nothing to call.
-3. **Phrase** — exact syntax `CONFIRM SEND TO <recipient> <your phrase>`, with
-   the phrase in `~/.config/hermes-pi/send-consent-phrase`. **Missing file =
-   nothing can ever be sent.** The recipient is part of the phrase so consent
-   authorises one delivery to one person and cannot be reused.
-
-**Optional, only if you ever want send:** create the phrase file. Until then
-nothing can send regardless.
-
-## ~~Needs you — Gmail + Calendar~~ (done)
-
-Everything is built and loaded; only the OAuth consent is missing, and only you
-can give it. The tools currently answer *"Google account is not connected yet"*
-rather than erroring, so nothing is broken in the meantime.
-
-1. https://console.cloud.google.com/ → new project (any name)
-2. **APIs & Services → Library** → enable **Gmail API** *and* **Google Calendar API**
-3. **OAuth consent screen** → External → fill the three required fields →
-   **Audience → Test users → add your own Gmail address**
-   (without this step the login is refused as "app not verified")
-4. **Credentials → Create credentials → OAuth client ID → Desktop app** → download JSON
-5. Put it on the Pi at `~/.config/hermes-pi/google-client-secret.json`
-6. Run it — prints a link, you approve on any device, paste a code back:
-
-```bash
-cd ~/projects/hermes-pi && python3 scripts/google_auth.py
-systemctl --user restart hermes-gateway
-```
-
-Then ask *"how many unread emails do I have?"*
-
-**Scopes are read-only and Google enforces that** — it cannot send, delete or
-change anything. Deliberate, given the voice lane above. Details in
-`docs/GOOGLE.md`.
-
----
-
-## Needs you — train your own hand signs
-
-The pipeline is built and wired; it just has no samples yet.
-
-```bash
-cd ~/projects/hermes-pi
-python3 tools/gesture_train.py --record OK --seconds 8
-python3 tools/gesture_train.py --record SPOCK --seconds 8
-python3 tools/gesture_train.py --check          # held-out accuracy
-systemctl --user restart hermes-camera
-```
-
-Hold the pose and **move it around** — nearer, further, rotated. Position,
-rotation and scale are removed by construction, so what you are actually
-collecting is the range of shapes *you* make when you mean that sign.
-
-`--check` splits results three ways. **WRONG is the number to watch, not
-accuracy** — a rejected gesture costs you a repeat, a wrong one runs something
-you did not ask for, and anyone in the room can trigger it.
-
-It learns from **landmarks, not images**, and `docs/GESTURES.md` explains why
-that is better here rather than a shortcut.
-
----
-
-## Done and running
+The panel owns the whole screen and there is no login prompt behind it. If the
+network drops you cannot SSH either. Both routes below are **entirely local** —
+no agent, no internet — because that is exactly the situation they exist for:
 
 | | |
 |---|---|
-| **Circle aspect** | Captured `/dev/fb0`: rings are perfectly round in the framebuffer, so the *panel* was squashing them (800×480 sent to a 480×320 screen). Pre-compensated; measured 0.885 → **0.965** on the glass. Packs regenerated. |
-| **Header overlap** | The same capture showed the clock and date colliding into a smear. They were two guessed offsets that cleared each other at the old resolution. Now stacked from measured glyph heights. |
-| **MIC label** | Constant now. The *body* carries "I am hearing you" — the visual switches and the strip reads `LISTENING`, only when Hermes has nothing more important to show. |
-| **Voice tool parity** | Above. Verified running `terminal`. |
-| **Transcript with replies** | Every voice reply opens with 🎤 "*what it heard*". A bot cannot post *as you*, so this is the fallback you named — and it earns its place: it is how you tell a wrong answer from a misheard question. |
-| **Updated + cleaned** | claude 2.1.222 → **2.1.226**. Caches cleared. `tools/bench_spi.py` deleted — it measured a bus that no longer exists, and the runbook still told people to run it. |
+| **Say it** | "hey jarvis" → **"open terminal"** — as a complete sentence, nothing else |
+| **Hold it** | The button on the ReSpeaker HAT, **3 seconds unbroken** |
+
+Say **"close terminal"** or hold again to bring the panel back.
+
+The spoken phrase is matched by `voice/local.py` *before* the transcript goes
+anywhere near Hermes. Routing it through the agent would have been easier and
+would have been dead in the only situation that matters, since inference is a
+cloud call.
+
+Neither fires by accident: the phrase must be the **whole** utterance ("can you
+open terminal for me" does nothing, and a television cannot stumble into it),
+and the button needs an unbroken hold so a knock cannot accumulate.
+
+Over SSH: `scripts/console-mode.sh on|off|status`.
+
+## Your changes — reverted
+
+| | |
+|---|---|
+| `systemd.unit=multi-user.target` in `cmdline.txt` | removed (redundant; it is already the default and it logged an override warning every boot) |
+| `quiet splash` missing | restored |
+| `hermes-display` disabled | re-enabled |
+| `hermes-fbcon-detach` **masked** | unit restored from git, re-enabled |
+
+Boot path is back to stock: `multi-user.target`, lingering on, all seven user
+services enabled, `hermes-fbcon-detach` enabled.
+
+## The resolution, settled with arithmetic
+
+Both numbers you have seen are true, which is why it looked inconsistent:
+
+- **The panel is physically 480×320.**
+- **The framebuffer is 800×480**, and it has to be.
+
+HDMI cannot carry 480×320. At 60 Hz it needs an ~11.6 MHz pixel clock and the
+HDMI minimum is **25 MHz**, so the driver rejects the mode outright. 640×480 is
+also short at ~23.2 MHz. **800×480 (~29 MHz) is the smallest mode that can
+physically be transmitted**, and it is the only one this panel offers besides
+720×480. The panel's own scaler fits it to the 480×320 glass, and the renderer
+pre-compensates that non-square scaling so circles come out round.
+
+This is now stated once, canonically, in `docs/HARDWARE.md`. The stale claim
+you saw was in `README.md`, which still described the SPI panel removed weeks
+ago.
+
+## Voice replies were silent — fixed
+
+`speak` was returning "nothing to say" on every turn. The cause was the tool
+**schema**, not the handler, which is why two rounds of fixing the handler did
+nothing: Hermes wants `name`/`description`/`parameters` flat, and I had wrapped
+them in the OpenAI `{"type":"function", ...}` envelope. Wrapped, the tool
+registers, appears, and gets called — the declared arguments are silently
+dropped. Verified end to end.
+
+## System health
+
+| | |
+|---|---|
+| Power / thermal | `throttled=0x0`, 46.6 °C — clean, no undervoltage |
+| Disk | 17 GB used of 115 GB (15%) |
+| Memory | 2.0 GB used of 7.9 GB |
+| SD card | 0 mmc errors |
+| Filesystem | 0 real errors (2 journald messages, from unclean power-offs) |
+| Services | all 7 user + 1 system active and enabled; **0 failed units** |
+| Network | wlan0 `192.168.2.56`, internet OK |
+| Sockets | 22 (ssh) and 8081 (camera, token-gated) on the LAN; 8644 loopback only |
+| Tests | **11/11 modules pass** |
+
+## Ready to publish
+
+- `README.md` rewritten — it described the old SPI panel, said voice and camera
+  were "deferred", and claimed the machine had no GPU
+- `LICENSE` added (MIT — say if you want something else)
+- **Secret sweep clean**: no token, key or credential in the working tree *or*
+  in git history. Every pattern match is a variable name or a doc line.
+- `.gitignore` hardened and **verified by planting fake secrets** and checking
+  they were ignored, rather than by reading it
+
+47 commits, 103 files, 4 MB of history.
+
+### To create the repo
+
+```bash
+gh repo create hermes-pi --private --source=. --remote=origin --push
+```
+
+I stopped short of running that — it is outward-facing and irreversible in a
+way the rest of this is not. **Start private**: `docs/SECURITY.md` describes
+this machine's threat model in detail, and `docs/HARDWARE.md` carries its
+hostname and MAC.
 
 ---
 
-## Two things I could not test
+## Optional, needs your hands
 
-- **The circle.** I corrected it from a framebuffer capture and arithmetic, and
-  I cannot see your screen. If it now looks too *wide*, the panel is not
-  480×320 — set `HERMES_PIXEL_ASPECT=1.0` and re-run `tools/render_frames.py`.
-- **Whether the speaker is audible.** A speaker is now connected and the whole
-  chain runs clean — agent → `speak` → `speak.txt` → piper → HAT, all verified
-  in the logs — but I cannot hear it, so "it played without error" is not the
-  same as "you heard it". If it is silent, say which connector you used: the
-  3.5 mm jack and the JST header are separate outputs.
-
-## Still outstanding from before
-
+- **Train hand signs** — `python3 tools/gesture_train.py --record OK`
+- **Audition voices** — `python3 tools/tts_voices.py --audition` (currently
+  `en_GB-southern_english_female-low`)
+- **Calibrate pinch** — `python3 tools/gesture_calibrate.py --collect pinch`
+- **Test the escape hatch for real** — say "open terminal", and try the button
 - **D-1**: the denied-user Discord test has never been run. It matters more now
-  — that allowlist is the only thing between a stranger and the shell, and voice
-  has just been given the same reach.
-- **Pinch thresholds** are still my provisional numbers, not measured from your
-  hand: `python3 tools/gesture_calibrate.py --collect pinch`.
+  that voice has terminal access.
