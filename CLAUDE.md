@@ -504,6 +504,24 @@ against a client that was provably fine: running
 the client is stdlib-only and uses explicit-width ctypes rather than
 `ctypes.wintypes` — reproducing on the Pi is a first move, not a last resort.
 
+**44. A `pythonw.exe` THAT EXISTS IS NOT A `pythonw.exe` THAT RUNS, and the
+difference produces no output anywhere.** `Get-Command pythonw.exe` resolved to
+a venv copy (here, the Hermes agent's own) which never started. Because pythonw
+has no console, and because it died before `hermes_gesture.py` reached
+`_open_log`, the result was: Scheduled Task registered fine, `State: Ready`,
+`Get-Process` empty, **and no log file at all** — while the identical script run
+by hand with `python` worked perfectly, gestures and all.
+
+"No log was ever written" is the diagnostic. The client opens one as its first
+real act under pythonw, so its ABSENCE means the interpreter never got that far,
+which points at the interpreter and not at the client. Smoke test every
+candidate by actually running it (`-c "open(sentinel,'w').write('ok')"`) and
+build the task around the first that executes — prefer the one PATH resolves for
+`python`, since that is the one already proven by hand. Anything selecting an
+interpreter here must also accept that it may end up being `python.exe`, so
+matching running clients on `Name='pythonw.exe'` alone reports "not running"
+about a client that is.
+
 **43. `Start-Process` from PowerShell makes the client a CHILD of that window.**
 The whole point of the laptop client is outliving the window it was started
 from, and starting it any other way tests a launch path that will never be used

@@ -131,24 +131,66 @@ Copy both into $Dir first:
 # The client detects the missing console and redirects its output to a log --
 # without that, every message it produces would go nowhere (CPython's print()
 # silently does nothing when sys.stdout is None).
-$pythonw = (Get-Command pythonw.exe -ErrorAction SilentlyContinue |
-            Select-Object -First 1).Source
-if (-not $pythonw) {
-    $py = (Get-Command python.exe -ErrorAction SilentlyContinue |
-           Select-Object -First 1).Source
-    if (-not $py) {
-        Write-Error "no python.exe on PATH -- install Python first"
-        exit 1
+#
+# BUT EXISTING IS NOT THE SAME AS WORKING, and the difference is invisible here.
+# A pythonw.exe that cannot start -- a venv whose base install moved, a broken
+# Store alias -- fails with NO output at all, because it has no console to fail
+# into and it dies before the client can open its log. Observed exactly that:
+# the task sat at Ready, nothing ran, and no log was ever written, while the
+# same script run by hand with `python` worked perfectly.
+#
+# So every candidate is SMOKE TESTED by running it, and the first one that
+# actually executes is the one the task gets built around.
+function Test-Interpreter {
+    param([string]$Exe)
+    if (-not $Exe -or -not (Test-Path -LiteralPath $Exe)) { return $false }
+    $sentinel = Join-Path $env:TEMP ("hermes-pyw-" + [guid]::NewGuid().ToString("N") + ".txt")
+    try {
+        # -c with a plain write: proves the interpreter starts and can reach the
+        # filesystem, which is all the client needs before it opens its log.
+        Start-Process -FilePath $Exe -WindowStyle Hidden `
+            -ArgumentList @("-c", "open(r'$sentinel','w').write('ok')") `
+            -Wait -ErrorAction Stop
+    } catch {
+        return $false
     }
-    $pythonw = Join-Path (Split-Path -Parent $py) "pythonw.exe"
-    if (-not (Test-Path -LiteralPath $pythonw)) {
-        Write-Error "no pythonw.exe next to $py"
-        exit 1
-    }
+    $ok = Test-Path -LiteralPath $sentinel
+    Remove-Item -LiteralPath $sentinel -Force -ErrorAction SilentlyContinue
+    return $ok
 }
+
+# Candidates, best first. The one PATH resolves for `python` comes first
+# because it is the one the owner has already proven by running it.
+$candidates = @()
+$pathPy = (Get-Command python.exe -ErrorAction SilentlyContinue |
+           Select-Object -First 1).Source
+if ($pathPy) { $candidates += (Join-Path (Split-Path -Parent $pathPy) "pythonw.exe") }
+$candidates += (Get-Command pythonw.exe -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty Source)
+$candidates += (Get-Command pyw.exe -ErrorAction SilentlyContinue |
+                Select-Object -First 1).Source
+# python.exe last: it works, at the cost of a console window that sits there.
+if ($pathPy) { $candidates += $pathPy }
+
+$pythonw = $null
+foreach ($c in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
+    Write-Host "testing $c ..." -NoNewline
+    if (Test-Interpreter $c) {
+        Write-Host " ok"
+        $pythonw = $c
+        break
+    }
+    Write-Host " does not run" -ForegroundColor Yellow
+}
+if (-not $pythonw) {
+    Write-Error "no working Python found. Tried:`n  $($candidates -join "`n  ")"
+    exit 1
+}
+
 # python.exe alongside it, for diagnostics: --fire and a manual run both
 # exist to be READ, and pythonw has nowhere to print.
 $pyexe = Join-Path (Split-Path -Parent $pythonw) "python.exe"
+if (-not (Test-Path -LiteralPath $pyexe)) { $pyexe = $pathPy }
 
 Write-Host "python : $pythonw"
 Write-Host "script : $clientPy"
@@ -176,8 +218,11 @@ if ($isAdmin -and $User -ne $me) {
 # agent's own venv -- so `Get-Process pythonw | Stop-Process` would kill
 # whatever else happens to be running under it. Match on the command line.
 function Get-HermesClients {
-    Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" `
-        -ErrorAction SilentlyContinue |
+    # Any python, not just pythonw: the interpreter is chosen by smoke test and
+    # can legitimately end up being python.exe. Filtering on the name we hoped
+    # for would then report "not running" about a client that is.
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue `
+        -Filter "Name='pythonw.exe' OR Name='python.exe' OR Name='pyw.exe'" |
         Where-Object { $_.CommandLine -like "*hermes_gesture.py*" }
 }
 
