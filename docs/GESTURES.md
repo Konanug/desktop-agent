@@ -308,10 +308,28 @@ shell string).
 powershell -ExecutionPolicy Bypass -File .\install-gesture-client.ps1
 ```
 
-Registers a Scheduled Task, **starts it**, and reports whether exactly one
-`pythonw` is running. That last part is the point: the hand-written version of
-this lost a line twice, and the second time it was `Start-ScheduledTask`, so the
-task existed and had never run — which looks exactly like the task dying.
+Installs an autostart, **starts it**, and reports whether exactly one client is
+running. That last part is the point: the hand-written version of this lost a
+line twice, and the second time it was `Start-ScheduledTask`, so the task
+existed and had never run — which looks exactly like the task dying.
+
+**It needs no administrator.** A Scheduled Task is tried first, because it can
+restart the client if the process dies. Registering one in the root task folder
+wants elevation on many machines — seen here as `Register-ScheduledTask : Access
+is denied` (`HRESULT 0x80070005`) from an ordinary PowerShell — so it falls back
+to a **Startup shortcut**, which gives the client everything it actually needs:
+logon start, the owner's own session, and a desktop for `SendInput`. What is
+given up is restart-on-failure, and that matters less than it sounds: losing the
+*connection* is the common failure and the client already retries forever with
+backoff. Force either with `-Method task` (in an elevated shell) or
+`-Method startup`.
+
+**Exactly one of the two is ever installed**, and any client already running is
+stopped first. Having a Startup shortcut and a Scheduled Task at the same time
+has already happened here: the Pi sees `viewers=2` and every key gets pressed
+twice. The stop matches on the command line rather than killing every
+`pythonw` — the Python in use may be a shared one, and on this laptop it is the
+Hermes agent's own venv.
 
 Two things it gets right that are easy to miss by hand:
 

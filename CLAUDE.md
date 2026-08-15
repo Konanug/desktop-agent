@@ -452,13 +452,31 @@ script never mentions, and says nothing about which variable was empty. Resolve
 in the BODY with a fallback chain (`$PSScriptRoot` → `$MyInvocation.MyCommand.
 Path` → `Get-Location`) and check it before use.
 
+**41. `Register-ScheduledTask` NEEDS ELEVATION for the root task folder** —
+`Access is denied`, `HRESULT 0x80070005`, from an ordinary PowerShell. So a
+Scheduled Task cannot be the only way to autostart the laptop client, and the
+installer falls back to a **Startup shortcut**, which needs no admin and still
+provides everything `SendInput` requires: logon start, the owner's session, and
+a desktop. The only thing lost is restart-on-failure, and the common failure is
+the *connection*, which the client already retries forever.
+
+Install **exactly one** of the two and stop any client already running — a
+Startup shortcut plus a Scheduled Task has already happened here and shows up on
+the Pi as `viewers=2` with every key pressed twice. Match the running client on
+its COMMAND LINE, not on `Get-Process pythonw`: the Python in use may be shared,
+and on this laptop it is the Hermes agent's own venv, so a blanket kill would
+take out something unrelated.
+
 **There is no PowerShell on this Pi**, so nothing in
-`scripts/install-gesture-client.ps1` can be run before the owner runs it. Two
+`scripts/install-gesture-client.ps1` can be run before the owner runs it. Four
 consequences to keep: every optional refinement (`$trigger.Delay`,
 `RestartInterval`/`RestartCount`) is wrapped in `try/catch`, because an
-unsupported property must not be why the whole install fails; and `$script` was
+unsupported property must not be why the whole install fails; `$script` was
 renamed to `$clientPy`, since `script` is a scope keyword and "legal but
-confusing" is not worth it when it cannot be tested.
+confusing" is not worth it when it cannot be tested; **`$x = if (…) { } <newline>
+else { }` is a PARSE ERROR** in an assignment, because the newline ends the
+statement — write the `if` as a statement instead; and the script prints the
+client's own log on failure rather than naming its path.
 
 **26. Feeding unrelated stills to a `RunningMode.VIDEO` tracker measures
 nothing.** VIDEO mode carries a track between frames and uses the previous
