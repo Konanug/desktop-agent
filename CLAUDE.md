@@ -443,6 +443,23 @@ expensive enough to want both. Related: `LogonType Interactive` is not optional
 which has no desktop, so every `SendInput` fails while the process stays alive
 and connected.
 
+**40. `$PSScriptRoot` CAN BE EMPTY IN A `param()` DEFAULT, and the error names
+the wrong thing.** `param([string]$Dir = $PSScriptRoot)` came back empty under
+`powershell -ExecutionPolicy Bypass -File .\script.ps1`, and the first cmdlet to
+touch it — `Resolve-Path` — failed with *"Cannot bind argument to parameter
+'Path' because it is an empty string"*. That names `Path`, a parameter the
+script never mentions, and says nothing about which variable was empty. Resolve
+in the BODY with a fallback chain (`$PSScriptRoot` → `$MyInvocation.MyCommand.
+Path` → `Get-Location`) and check it before use.
+
+**There is no PowerShell on this Pi**, so nothing in
+`scripts/install-gesture-client.ps1` can be run before the owner runs it. Two
+consequences to keep: every optional refinement (`$trigger.Delay`,
+`RestartInterval`/`RestartCount`) is wrapped in `try/catch`, because an
+unsupported property must not be why the whole install fails; and `$script` was
+renamed to `$clientPy`, since `script` is a scope keyword and "legal but
+confusing" is not worth it when it cannot be tested.
+
 **26. Feeding unrelated stills to a `RunningMode.VIDEO` tracker measures
 nothing.** VIDEO mode carries a track between frames and uses the previous
 frame as a prior, so jump-cutting between different photos breaks it. The
