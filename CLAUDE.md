@@ -504,6 +504,36 @@ against a client that was provably fine: running
 the client is stdlib-only and uses explicit-width ctypes rather than
 `ctypes.wintypes` — reproducing on the Pi is a first move, not a last resort.
 
+**47. A TOOL THAT WAITS FOR THE USER MUST NOT BE IN A FIRE-AND-FORGET LANE.**
+`clarify` asks a question and blocks on the answer. The webhook platform — which
+is the voice lane — provides **no clarify callback at all**, so the question
+goes nowhere and the turn sits there. `agent.clarify_timeout` defaults to
+**3600 s**, so "sits there" means an hour. Observed as
+`⏳ Working — 39 min — iteration 1/500, clarify`, repeatedly.
+
+The give-away is the tool name in the status line, and it is worth reading:
+`iteration 1/500` says the agent never got past its FIRST step, which is not
+what a slow model looks like. Removed from `platform_toolsets.webhook`;
+`agent.clarify_timeout: 240` caps it everywhere else, because an hour is not a
+sensible ceiling even on Discord where it CAN be answered.
+
+Same test for anything added to that lane later: if the tool needs a human to
+respond before it returns, the voice lane cannot host it.
+
+**48. HERMES SHIPS A SPOTIFY TOOLSET — do not write one.** Seven tools
+(`spotify_search`, `_playback`, `_queue`, `_playlists`, `_library`, `_albums`,
+`_devices`) at `~/.hermes/hermes-agent/plugins/spotify/`, PKCE OAuth, tokens in
+`~/.hermes/auth.json`, refreshed on 401. Off by default so its schemas do not
+ride on every call. `hermes tools` enables it, `hermes auth spotify` logs in.
+Needs a per-user developer app (Spotify forbids shipping a shared one) —
+`HERMES_SPOTIFY_CLIENT_ID` is already in `~/.hermes/.env` here. **Premium is
+required for playback control, and an active Spotify Connect device must
+exist**, else 403 "no active device".
+
+This is a different thing from the laptop lane and both are worth keeping: the
+fast lane pauses music in ~1 s without a model, while the Web API can find a
+specific song but costs a full agent turn to do it.
+
 **46. A VENV'S `pythonw.exe` CAN BE A CONSOLE BINARY, AND THAT ONE FACT CAUSED
 TWO SEPARATE BUGS OVER TWO EVENINGS.** CONFIRMED on this laptop — the PE
 subsystem byte at optional-header offset `0x5C` reads **3** (console), not 2

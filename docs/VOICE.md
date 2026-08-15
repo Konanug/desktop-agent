@@ -420,6 +420,24 @@ subscribers got the name. Zero means the laptop is not listening and nothing
 happened, so it says *"Your laptop isn't connected, sir"* rather than "Playing."
 That is the panel's one rule, in speech instead of pixels.
 
+### What the voice lane must never be given
+
+`clarify` asks the owner a question and blocks until it is answered. The webhook
+platform provides **no clarify callback**, so on this lane the question is asked
+into the void and the turn stops dead — for `agent.clarify_timeout`, which
+defaults to **an hour**. It presented as
+`⏳ Working — 39 min — iteration 1/500, clarify`, and `iteration 1/500` is the
+tell: the agent never got past its first step, which is not what a slow model
+looks like.
+
+Removed from `platform_toolsets.webhook`, and `agent.clarify_timeout: 240` caps
+it on Discord too, where it *can* be answered but should still not be able to
+hold a turn open for an hour.
+
+**The general rule for this lane: if a tool needs a human to respond before it
+returns, it cannot go here.** Voice delivery is fire-and-forget by design — the
+same property that makes `speak` a separate tool call.
+
 ### Two stages, because the small model is only as good as its job
 
 | model | commands exact | mean |
