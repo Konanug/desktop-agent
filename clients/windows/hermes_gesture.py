@@ -606,8 +606,18 @@ def _open_log(path: str | None) -> None:
     the script may sit somewhere the user cannot write.
     """
     if path is None:
-        if sys.stdout is not None:
-            return                              # a console: leave it alone
+        # `sys.stdout is not None` IS NOT A RELIABLE TEST FOR "has a console".
+        # It is the documented pythonw.exe behaviour and it did not hold here:
+        # across six background runs -- several of which provably connected to
+        # the Pi and delivered gestures -- no log file was ever created, which
+        # can only mean this branch returned early. A stdout that is not None
+        # but is not writable either fails BOTH ways: nothing is logged, and
+        # every print() raises into a program that has nowhere to report it.
+        #
+        # So probe it rather than trust it: if writing to stdout does not work,
+        # this has no console whatever the object says.
+        if _stdout_works():
+            return                              # a real console: leave it alone
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
         path = os.path.join(base, "hermes-gesture.log")
     try:
@@ -617,6 +627,29 @@ def _open_log(path: str | None) -> None:
     sys.stdout = sys.stderr = f
     print(f"\n--- started {time.strftime('%Y-%m-%d %H:%M:%S')} "
           f"pid={os.getpid()} ---", flush=True)
+
+
+def _stdout_works() -> bool:
+    """Can we actually print? Not "is there a stdout object".
+
+    Under pythonw.exe sys.stdout is documented to be None, and print() then
+    silently does nothing -- which is survivable. What is not survivable is a
+    stdout that EXISTS and raises on write: print() then throws OSError from
+    wherever it is called, and in a program whose whole job is to sit in a loop
+    that kills it with no way to say why.
+
+    Writing nothing and flushing is enough to find out, and costs nothing on a
+    real console.
+    """
+    out = getattr(sys, "stdout", None)
+    if out is None:
+        return False
+    try:
+        out.write("")
+        out.flush()
+        return True
+    except Exception:
+        return False
 
 
 def _find_config(name: str) -> str:

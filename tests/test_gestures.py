@@ -641,6 +641,71 @@ def test_the_url_action_still_refuses_protocol_handlers():
         raise AssertionError(f"url {bad!r} was accepted")
 
 
+def test_a_stdout_that_raises_is_not_a_console():
+    """THE ONE THAT WENT UNDIAGNOSED FOR SIX ROUNDS.
+
+    `sys.stdout is None` is the documented pythonw.exe behaviour and it was
+    trusted as the test for "has no console". A stdout that EXISTS but raises
+    on write fails both ways at once: the log is never opened, because the
+    check says there is a console, and every print() then throws from wherever
+    it is called -- in a program whose job is to sit in a loop, with nowhere to
+    report it. Symptom: background runs that connect, deliver gestures, and
+    die, leaving no log and no error anywhere.
+    """
+    import io
+    import hermes_gesture as hg
+
+    class Broken(io.TextIOBase):
+        def write(self, s): raise OSError(9, "Bad file descriptor")
+        def flush(self): raise OSError(9, "Bad file descriptor")
+
+    real = sys.stdout
+    try:
+        assert hg._stdout_works() is True, "a real console read as unusable"
+        sys.stdout = None
+        assert hg._stdout_works() is False
+        sys.stdout = Broken()
+        assert hg._stdout_works() is False, \
+            "a stdout that raises was reported as a working console"
+    finally:
+        sys.stdout = real
+
+
+def test_a_broken_stdout_still_gets_a_log():
+    """... and the consequence: output has somewhere to go regardless."""
+    import io
+    import tempfile
+    import hermes_gesture as hg
+
+    class Broken(io.TextIOBase):
+        def write(self, s): raise OSError(9, "Bad file descriptor")
+        def flush(self): raise OSError(9, "Bad file descriptor")
+
+    real, realenv = sys.stdout, os.environ.get("LOCALAPPDATA")
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            os.environ["LOCALAPPDATA"] = d
+            sys.stdout = Broken()
+            hg._open_log(None)
+            sys.stdout.write("a line the owner needs to see\n")
+            sys.stdout.flush()
+        finally:
+            f = sys.stdout
+            sys.stdout = real
+            if f is not real:
+                try:
+                    f.close()
+                except Exception:
+                    pass
+            if realenv is None:
+                os.environ.pop("LOCALAPPDATA", None)
+            else:
+                os.environ["LOCALAPPDATA"] = realenv
+        p = os.path.join(d, "hermes-gesture.log")
+        assert os.path.exists(p), "no log written when stdout was unusable"
+        assert "a line the owner needs to see" in open(p).read()
+
+
 def test_the_config_is_found_from_next_to_the_script():
     """A Scheduled Task with no "Start in" runs from C:\\Windows\\System32.
 

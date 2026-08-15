@@ -278,7 +278,13 @@ Get-HermesClients | ForEach-Object {
     Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
 }
 
-$arguments = "`"$clientPy`" --config `"$config`""
+# --log EXPLICITLY, rather than letting the client work out that it has no
+# console. That detection failed silently six times: no log was ever written,
+# including on runs that provably connected and delivered gestures, which left
+# every background failure completely mute. The installer knows where the log
+# belongs, so it says so and the question never arises.
+$logPath   = Join-Path $env:LOCALAPPDATA "hermes-gesture.log"
+$arguments = "`"$clientPy`" --config `"$config`" --log `"$logPath`""
 $installed = $null
 
 # --- first choice: a Scheduled Task -------------------------------------
@@ -389,7 +395,7 @@ $procs = @(Get-HermesClients)
 # The client writes its log under the account it RUNS AS, which is not this
 # process's account when an admin installed it for someone else. Naming this
 # shell's LOCALAPPDATA would send you to a file that will never exist.
-$log = Join-Path $env:LOCALAPPDATA "hermes-gesture.log"
+$log = $logPath
 if ($User -ne $me) {
     $userLeaf = ($User -split "\\")[-1]
     $guess = Join-Path (Join-Path (Split-Path -Parent $env:USERPROFILE) $userLeaf) `
