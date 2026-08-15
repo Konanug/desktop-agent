@@ -57,13 +57,7 @@ vented rear shell. The wedge is load-bearing in two senses — it puts the panel
 at a readable angle on a desk, and the volume behind it is what makes room for
 the cooler that keeps this at 60 °C under continuous vision work.
 
-<!-- VIDEO: replace this whole comment block with the GitHub attachment URL on
-     its own line. See assets/cad/README.md for how to get one -- a committed
-     .mp4 referenced as an image does NOT render a player, and <video> is
-     stripped from README markdown. -->
-
-> **▶ Explode animation** — an ~8 s clip goes here.
-> Committed copy: [`assets/cad/enclosure-exploded.mp4`](assets/cad/enclosure-exploded.mp4)
+https://github.com/user-attachments/assets/dde94b69-73c5-4651-8de8-bedb814e6f65
 
 ## Hardware
 
