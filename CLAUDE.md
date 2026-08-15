@@ -504,6 +504,25 @@ against a client that was provably fine: running
 the client is stdlib-only and uses explicit-width ctypes rather than
 `ctypes.wintypes` — reproducing on the Pi is a first move, not a last resort.
 
+**49. `throttled` READS 0 IN THE LOW BITS WHILE THE BOARD IS BROWNING OUT
+REPEATEDLY.** `throttled=0x50000` is bits 16 and 18 — *under-voltage HAS
+occurred*, *throttling HAS occurred*. The low nibble says only whether it is
+happening in the instant you looked, and each event lasts 2–6 s, so a spot check
+almost always reads clean. **Nine events in one boot, six inside ten minutes**,
+found only by `journalctl -k | grep -i undervolt`. Check the sticky bits and the
+kernel log, never the live flags.
+
+Measured rail: **min 4.833 V**, trip at ~4.63 V, so ~0.2 V of margin — and 2 Hz
+`vcgencmd` sampling cannot see the transients the firmware actually trips on, so
+the real minimum is lower. Full numbers in `docs/HARDWARE.md`.
+
+**And check the fan by its TACHOMETER, not its requested state.**
+`cooling_device*/cur_state` is what was asked for; `hwmon*/fan1_input` is what is
+happening — 5341 RPM here, against a `cur_state` of 2. Same
+observation-beats-assertion rule the panel is built on. The fan was fine; the
+question "why is it hot" was pointing at the wrong component, and 60.6 °C at
+cooling level 2 of 4 is the designed response to trip points of 50/60/68/75 °C.
+
 **47. A TOOL THAT WAITS FOR THE USER MUST NOT BE IN A FIRE-AND-FORGET LANE.**
 `clarify` asks a question and blocks on the answer. The webhook platform — which
 is the voice lane — provides **no clarify callback at all**, so the question

@@ -107,6 +107,69 @@ temp=45.5'C
 ```
 throttled=0x0
 ```
+**No longer true as of 2026-08-15 — see Power below.**
+
+## Power — the 5 V rail is marginal, measured
+
+`throttled=0x50000` now: bit 16 *under-voltage has occurred*, bit 18 *throttling
+has occurred*. Nothing in the low bits, so neither is happening at the instant
+you read it — which is exactly why this hides. **Nine undervoltage events in one
+2 h 58 m boot**, six of them inside ten minutes:
+
+```
+21:39:39  21:39:43  21:39:53
+23:56:25  23:56:53  23:58:08  23:59:40  00:01:15  00:03:00
+```
+
+Each is `Undervoltage detected!` followed by `Voltage normalised` two to six
+seconds later (`journalctl -k | grep -i undervolt`).
+
+**Measured input rail**, 90 samples over 45 s of `vcgencmd pmic_read_adc
+EXT5V_V`:
+
+| | |
+|---|---|
+| max | 5.016 V |
+| min | **4.833 V** |
+| trip threshold | ~4.63 V |
+
+So the observable margin is **about 0.2 V**. And that understates it: sampling
+at 2 Hz through `vcgencmd` cannot see the microsecond transients the firmware
+detector actually trips on, so the true minimum is lower than 4.833 V. A rail
+that reads 5.00 V at rest and still trips is the signature of a supply that is
+fine at steady state and sags on transients — a marginal PSU or a thin/long
+USB-C cable, not a fault on the board.
+
+Draw at the time, from the PMIC: `VDD_CORE` 1.607 A at 0.890 V, `1V1_SYS`
+0.347 A, `0V8_SW` 0.427 A, `3V3_SYS` 0.220 A, HDMI 0.020 A at 4.966 V.
+
+**Why it appeared now.** It correlates with the camera and hand tracking running
+CONTINUOUSLY, which only became possible on 2026-08-15 when the laptop gesture
+client was finally made to stay connected (trap 46). Before that the client died
+within 41 s, the sensor slept 8 s later, and the load never lasted.
+**The correlation is not clean and should not be stated as cause**: a 9-minute
+camera-awake window at 23:34–23:43 produced zero events, and the current cluster
+began five minutes into its window. Sustained load is involved; it is not the
+whole story.
+
+The Pi 5 wants the official **27 W USB-C PD (5 V/5 A)**. A 5 V/3 A supply is
+marginal for this board before adding a camera, an I2S HAT and an HDMI panel.
+
+### Cooling — working, and not the problem
+
+Checked at the same time because "it feels hot" is easy to misattribute:
+
+| | |
+|---|---|
+| CPU | **60.6 °C** |
+| Fan | **5341 RPM** (`fan1_input`, a real tachometer) |
+| PWM | 125 / 255, cooling level **2 of 4** |
+| ARM clock | 2 400 MHz — not capped |
+
+Trip points are **50 / 60 / 68 / 75 °C**, so level 2 at 60.6 °C is the designed
+response, and it does not get louder until 68 °C. Read `fan1_input` rather than
+`cur_state`: the latter is what was *requested*, the former is what is
+*happening* — the same observation-beats-assertion rule the panel is built on.
 
 ### Network interfaces
 ```
