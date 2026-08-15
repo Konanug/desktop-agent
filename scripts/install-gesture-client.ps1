@@ -235,13 +235,45 @@ function Get-HermesClients {
 # same bug wearing a different hat.
 $startupLnk = Join-Path ([Environment]::GetFolderPath('Startup')) "HermesGesture.lnk"
 
+$staleTask = $false
 if (Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) {
     Stop-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue
-    try { Unregister-ScheduledTask -TaskName $Task -Confirm:$false } catch {
-        Write-Host "  (could not remove the old task: $($_.Exception.Message))"
+    try {
+        Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction Stop
+    } catch {
+        $staleTask = $true
+        Write-Host "`ncould not remove the existing task '$Task': $($_.Exception.Message)" `
+            -ForegroundColor Red
     }
 }
 if (Test-Path -LiteralPath $startupLnk) { Remove-Item -LiteralPath $startupLnk -Force }
+
+# A TASK WE COULD NOT REMOVE PLUS A SHORTCUT WE ARE ABOUT TO ADD IS TWO
+# AUTOSTARTS, and this script's one promise is that there is exactly one.
+#
+# Removing a task needs the same elevation registering one does, so a
+# non-elevated run against a leftover task can only make things worse: the task
+# still starts a client at logon, the shortcut starts a second, and the Pi sees
+# viewers=2 while every key is pressed twice. Refuse instead, and say the one
+# command that fixes it.
+if ($staleTask -and $Method -ne "task") {
+    Write-Host @"
+
+REFUSING to install a second autostart on top of it.
+
+That task still starts a client at logon. Adding a Startup shortcut as well
+would run two, and every keypress would happen twice.
+
+Removing it needs the same elevation that registering it did. Run:
+
+  Start-Process powershell -Verb RunAs -ArgumentList '-NoExit','-ExecutionPolicy','Bypass','-File','$PSCommandPath','-Method','task'
+
+That removes the old task and registers a fresh one, which is also the better
+autostart: the Task Scheduler owns it, so it does not die with the window that
+started it.
+"@ -ForegroundColor Yellow
+    exit 1
+}
 Get-HermesClients | ForEach-Object {
     Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
 }
@@ -322,18 +354,29 @@ if (-not $installed) {
     $sc.Description      = "Hermes gesture client"
     $sc.Save()
 
-    # LAUNCH IT THROUGH EXPLORER, NOT AS OUR OWN CHILD.
+    # START IT THROUGH WMI, NOT AS OUR OWN CHILD.
     #
-    # Start-Process would make this PowerShell the parent, and the point of the
-    # whole exercise is a client that outlives the window it was started from.
-    # A process started this way is reparented to the shell, so closing the
-    # window cannot take it with it, and it is started exactly as it will be at
-    # every future logon -- the same shortcut, by the same launcher. Testing a
-    # different launch path than the one that will actually be used is how you
-    # verify something other than what ships.
-    Start-Process explorer.exe -ArgumentList "`"$startupLnk`"" | Out-Null
+    # The shortcut handles every FUTURE logon -- at logon the shell starts it,
+    # which is exactly right. The problem is only the instance started now:
+    # Start-Process makes this PowerShell the parent, and `explorer.exe <lnk>`
+    # was no better, because an already-running explorer hands the request back
+    # and the process still ends up tied to this console. Both were MEASURED
+    # dying the moment the window closed, after happily delivering gestures --
+    # the Pi logged 7 events over 29 s and then the socket went away.
+    #
+    # Win32_Process.Create builds the process from the WMI service, so its
+    # parent is WmiPrvSE and no console owns it. No elevation needed.
+    $spawn = Invoke-CimMethod -ClassName Win32_Process -MethodName Create `
+        -Arguments @{ CommandLine = "`"$pythonw`" $arguments"
+                      CurrentDirectory = $Dir } -ErrorAction SilentlyContinue
+    if (-not $spawn -or $spawn.ReturnValue -ne 0) {
+        Write-Host "  (WMI start returned $($spawn.ReturnValue); falling back)" `
+            -ForegroundColor Yellow
+        Start-Process -FilePath $pythonw -ArgumentList $arguments `
+            -WorkingDirectory $Dir | Out-Null
+    }
     $installed = "startup"
-    Write-Host "`ninstalled Startup shortcut and started it via explorer:"
+    Write-Host "`ninstalled Startup shortcut and started it detached:"
     Write-Host "  $startupLnk"
 }
 # Long enough for a client that is going to fail to have failed. The failures

@@ -504,23 +504,38 @@ against a client that was provably fine: running
 the client is stdlib-only and uses explicit-width ctypes rather than
 `ctypes.wintypes` — reproducing on the Pi is a first move, not a last resort.
 
-**44. A `pythonw.exe` THAT EXISTS IS NOT A `pythonw.exe` THAT RUNS, and the
-difference produces no output anywhere.** `Get-Command pythonw.exe` resolved to
-a venv copy (here, the Hermes agent's own) which never started. Because pythonw
-has no console, and because it died before `hermes_gesture.py` reached
-`_open_log`, the result was: Scheduled Task registered fine, `State: Ready`,
-`Get-Process` empty, **and no log file at all** — while the identical script run
-by hand with `python` worked perfectly, gestures and all.
+**44. NEITHER `Start-Process` NOR `explorer.exe <lnk>` DETACHES A PROCESS FROM
+THE CONSOLE THAT STARTED IT.** Both were tried and both were MEASURED dying the
+instant the PowerShell window closed — and not failing to work first: the Pi
+logged the client connecting and delivering **7 gestures over 29 s**, then the
+socket went away. `explorer.exe <file>` looks like it should reparent to the
+shell, but an already-running explorer hands the request back and the process
+still ends up owned by the console.
 
-"No log was ever written" is the diagnostic. The client opens one as its first
-real act under pythonw, so its ABSENCE means the interpreter never got that far,
-which points at the interpreter and not at the client. Smoke test every
-candidate by actually running it (`-c "open(sentinel,'w').write('ok')"`) and
-build the task around the first that executes — prefer the one PATH resolves for
-`python`, since that is the one already proven by hand. Anything selecting an
-interpreter here must also accept that it may end up being `python.exe`, so
-matching running clients on `Name='pythonw.exe'` alone reports "not running"
-about a client that is.
+`Invoke-CimMethod -ClassName Win32_Process -MethodName Create` builds the
+process from the WMI service, so its parent is `WmiPrvSE` and no console owns
+it. No elevation needed. A Scheduled Task is better still, because the scheduler
+owns it — but that needs admin, which is the whole reason the fallback exists.
+
+Note what is NOT broken here: a Startup shortcut is correct for every future
+logon, where the shell is the parent. Only the instance started *by the
+installer* was ever at risk, which is why this looked like "autostart doesn't
+work" rather than "the launch I did just now doesn't stick".
+
+**A wrong theory this cost, worth recording because the evidence was already in
+hand:** the same symptom was first blamed on a broken `pythonw.exe` — a venv
+copy that supposedly would not start. A one-line smoke test returned `True`.
+Existence-vs-runs is a real trap and the installer now smoke tests candidates
+anyway, but it was not this bug, and the owner's measurement said so before the
+theory did.
+
+**45. AN AUTOSTART YOU CANNOT REMOVE PLUS ONE YOU ARE ADDING IS TWO.** Removing
+a Scheduled Task needs the same elevation registering one does, so a
+non-elevated re-install against a leftover task can only make things worse: the
+task starts a client at logon, the new shortcut starts a second, the Pi reports
+`viewers=2` and every key is pressed twice. The installer used to warn and carry
+on — it now refuses and prints the elevated command, because "exactly one
+autostart" is the one promise it makes.
 
 **43. `Start-Process` from PowerShell makes the client a CHILD of that window.**
 The whole point of the laptop client is outliving the window it was started
