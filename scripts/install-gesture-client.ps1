@@ -186,16 +186,36 @@ function Test-Interpreter {
     return $ok
 }
 
-# Candidates, best first. The one PATH resolves for `python` comes first
-# because it is the one the owner has already proven by running it.
+# Candidates, best first.
+#
+# THE CLIENT IS STDLIB-ONLY, which is what makes this free: any Python 3.8+
+# will do, so we are at liberty to pick whichever interpreter has the right
+# properties rather than the one that happens to be first on PATH.
 $candidates = @()
 $pathPy = (Get-Command python.exe -ErrorAction SilentlyContinue |
            Select-Object -First 1).Source
 if ($pathPy) { $candidates += (Join-Path (Split-Path -Parent $pathPy) "pythonw.exe") }
-$candidates += (Get-Command pythonw.exe -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty Source)
+
+# A venv's Scripts\pythonw.exe is frequently a CONSOLE binary -- measured here,
+# subsystem 3 -- which is the whole bug. The base interpreter it was built from
+# is a real GUI pythonw, and pyvenv.cfg names it. Read it out and prefer it.
+foreach ($seed in @($pathPy, (Get-Command pythonw.exe -EA SilentlyContinue |
+                              Select-Object -First 1).Source)) {
+    if (-not $seed) { continue }
+    $cfg = Join-Path (Split-Path -Parent (Split-Path -Parent $seed)) "pyvenv.cfg"
+    if (-not (Test-Path -LiteralPath $cfg)) { continue }
+    $homeLine = Select-String -LiteralPath $cfg -Pattern '^\s*home\s*=\s*(.+)$' |
+                Select-Object -First 1
+    if ($homeLine) {
+        $base = $homeLine.Matches[0].Groups[1].Value.Trim()
+        $candidates += (Join-Path $base "pythonw.exe")
+    }
+}
+# The py launcher's windowed twin is GUI subsystem and usually present.
 $candidates += (Get-Command pyw.exe -ErrorAction SilentlyContinue |
                 Select-Object -First 1).Source
+$candidates += (Get-Command pythonw.exe -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty Source)
 # python.exe last: it works, at the cost of a console window that sits there.
 if ($pathPy) { $candidates += $pathPy }
 

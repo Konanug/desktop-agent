@@ -504,6 +504,33 @@ against a client that was provably fine: running
 the client is stdlib-only and uses explicit-width ctypes rather than
 `ctypes.wintypes` — reproducing on the Pi is a first move, not a last resort.
 
+**46. A VENV'S `pythonw.exe` CAN BE A CONSOLE BINARY, AND THAT ONE FACT CAUSED
+TWO SEPARATE BUGS OVER TWO EVENINGS.** CONFIRMED on this laptop — the PE
+subsystem byte at optional-header offset `0x5C` reads **3** (console), not 2
+(GUI), for `…\hermes-agent\venv\Scripts\pythonw.exe`. Consequences, both
+measured:
+
+* **It inherits the console of whatever started it and dies with that window.**
+  `LastTaskResult` was **3221225786** = `0xC000013A` = `STATUS_CONTROL_C_EXIT`.
+  A Task Scheduler-owned process has no business caring about a PowerShell
+  window; this one did, because it had a console to inherit. 529 s of healthy
+  running ended the instant the window closed, 110 s after the last gesture.
+* **Its inherited `stdout` exists but is unwritable**, so `sys.stdout is None`
+  is FALSE, the "no console" branch never runs, no log is ever written, and
+  every `print()` raises from inside the event loop. That is trap 44's silent
+  killer, and it is the same property.
+
+Diagnosis order that worked, after several that did not: `LastTaskResult` is the
+one value that says HOW a task's process ended, and `0xC000013A` names the cause
+outright. Read it before theorising. The subsystem check is four lines of
+PowerShell against the PE header and settles the rest.
+
+`scripts/install-gesture-client.ps1` now requires an interpreter that both RUNS
+and is GUI-subsystem, and finds the base interpreter via `pyvenv.cfg`'s `home =`
+when the venv's own is console. **This is free because the client is
+stdlib-only** — any Python 3.8+ will do, so there is no reason to be attached to
+the one on PATH.
+
 **44. NEITHER `Start-Process` NOR `explorer.exe <lnk>` DETACHES A PROCESS FROM
 THE CONSOLE THAT STARTED IT.** Both were tried and both were MEASURED dying the
 instant the PowerShell window closed — and not failing to work first: the Pi
