@@ -70,14 +70,16 @@ unit is dead.
 │   └── camera_probe.py   verifies the camera is LIVE and measures its rate
 ├── scripts/
 │   ├── install-hermes-ext.sh  symlinks hooks + plugins into ~/.hermes
-│   └── install-cv.sh          cv-venv (mediapipe) + hand_landmarker.task
+│   ├── install-cv.sh          cv-venv (mediapipe) + hand_landmarker.task
+│   └── install-gesture-client.ps1  the laptop task, and it STARTS it
 ├── voice/                the microphone owner (systemd user service)
-│   ├── listen.py         wake word + endpointing + faster-whisper
+│   ├── listen.py         wake word + endpointing + faster-whisper (two models)
+│   ├── fastlane.py       spoken commands that SKIP the agent -> /intent
 │   ├── sink.py           HMAC POST to the narrowed webhook lane; rate limits
 │   ├── speak.py          piper TTS out the ReSpeaker
 │   └── __main__.py       the loop; STATE, NEVER CONTENT in status.json
 ├── clients/windows/      hermes_gesture.py — STDLIB ONLY, runs on the laptop
-├── tests/                10 modules, all runnable as plain python3
+├── tests/                12 modules, all runnable as plain python3
 ├── systemd/              unit + drop-in templates
 └── docs/                 ARCHITECTURE, HARDWARE, SECURITY, RUNBOOK, DECISIONS,
                           STATE-CONTRACT, DEFERRED, CAMERA
@@ -390,6 +392,57 @@ own timeout must DERIVE its timeout from that constant, not restate the number,
 or raising one silently puts them back in a tie. Reproduce by running the
 module under four spinning cores.
 
+**36. WHISPER HALLUCINATES ON CLIPS UNDER ABOUT A SECOND, so a one-word voice
+command cannot be measured — or shipped.** A bare "pause" is ~0.6 s of audio;
+`tiny.en` returned "Okay." for "play" and `base.en` returned "toes." for
+"pause", spending **9.6 s** to do it against 1.6 s for a normal phrase. The
+first benchmark of the fast-lane vocabulary scored **5/11 on both models** and
+looked like proof that neither was usable. It was measuring synthetic
+single-word clips, which is not the task. Re-run on multi-word phrases padded
+the way a real capture is (`PREROLL` ahead, `SILENCE_END` behind), both models
+score **15/18** — and, crucially, *identically*, which is the entire argument
+for reading with the small one first. Same shape as trap 26: the fixture was
+wrong, not the thing being measured.
+
+The corollary is a design rule, not a preference: **every fast-lane phrase is at
+least two words**, and `tests/test_fastlane.py` asserts it. Phrase choice is
+measured too — "previous track" reads as "Prove this truck" and "skip back" as
+"Get back!", while "go back", "last song" and "next song" are 3/3 across voices.
+
+**37. A NAME PUBLISHED WITH NO BINDING AT THE FAR END FAILS COMPLETELY
+SILENTLY, and that is the security property working as designed.** The Pi puts a
+word on `/intent`; the laptop ignores words it does not know. So `PREV` against a
+laptop that binds `PREVIOUS` does nothing, reports nothing, and looks like
+success at every layer — `/intent` returns 200 with `subscribers: 1`, the voice
+service says "Going back", and no music moves. The first draft of
+`voice/fastlane.py` got three of seven names wrong this way.
+`tests/test_fastlane.py:test_every_intent_has_a_binding_on_the_laptop` reads
+`gestures.example.json` and checks the two sides against each other, because
+agreeing once is not the same as staying agreed.
+
+**38. `os.startfile` IS the right API for a URI and still does not get you the
+app.** It is `ShellExecute` — it does not route through the browser, and
+replacing `webbrowser.open` with it was correct. But it can only reach the
+desktop app if something registered a handler for the scheme, and that
+registration is not ours: the Microsoft Store build registers differently from
+the standalone installer, neither registers before the app has been run once,
+and a browser update can claim the association. When it is missing Windows falls
+back to the web player — which is indistinguishable from the bug that was just
+fixed, and is why "still opens the web" was reported after a correct fix. Launch
+the executable with `--uri=` first and keep the scheme as fallback, and **print
+which route ran**, because this was diagnosed by guessing twice.
+
+**39. A Windows Scheduled Task with no "Start in" runs from
+`C:\Windows\System32`.** A relative `--config` then resolves to a file that is
+not there and the client exits within milliseconds — before it has a console, a
+log, or any way to say so. That is indistinguishable from "the task never
+started", and was diagnosed as exactly that. Set `-WorkingDirectory` *and* have
+the program look next to itself; either alone is enough, and the failure is
+expensive enough to want both. Related: `LogonType Interactive` is not optional
+— a task that runs "whether the user is logged on or not" lives in session 0,
+which has no desktop, so every `SendInput` fails while the process stays alive
+and connected.
+
 **26. Feeding unrelated stills to a `RunningMode.VIDEO` tracker measures
 nothing.** VIDEO mode carries a track between frames and uses the previous
 frame as a prior, so jump-cutting between different photos breaks it. The
@@ -430,6 +483,7 @@ python3 tests/test_stream.py            # the room is not served without a token
 python3 tests/test_hands.py             # fingers read the same at every rotation
 python3 tests/test_gestures.py          # a held gesture fires once; limits cannot wedge
 python3 tests/test_voice.py             # no transcript in state; limits cannot wedge
+python3 tests/test_fastlane.py          # the television cannot pause your music
 ```
 
 `pytest` is NOT installed system-wide — every test module runs standalone via
@@ -466,7 +520,35 @@ real. The 6.36% → 0.73% improvement measured there stands.
 
 ---
 
-## Current task — camera DONE; gestures deliberately not built
+## Current task — latency; the fast lane is the answer
+
+**The complaint was that it felt sluggish, and the measurement said the model
+was six of the ten seconds.** That part is ChatGPT serving time and is not a
+setting. So the fix was to stop sending fixed commands to a model at all —
+`voice/fastlane.py`, which matches a closed set of phrases and publishes a named
+intent straight to the laptop. **"pause the music" went from ~9.5 s to 900 ms.**
+
+Read `docs/VOICE.md` before touching any of it. The load-bearing parts:
+
+- **Two-stage STT.** `tiny.en` reads first (888 ms) and `base.en` only on a
+  miss (1748 ms). MEASURED identical on the command vocabulary — 15/18 each —
+  and **Hermes only ever sees the `base.en` transcript**, so questions lose no
+  accuracy. See trap 36 for why the first benchmark of this said 5/11 and was
+  measuring nothing.
+- **The match is the WHOLE utterance**, and every phrase is at least two words.
+  Both are pinned; the substring version fires on "don't pause the music".
+- **A command nobody received is not confirmed.** `/intent` reports
+  `subscribers`, and zero means say so rather than say "Playing."
+- **The names must match the laptop's bindings** and the failure is silent —
+  trap 37.
+
+Also settled this round: `streaming.enabled: true` so Discord shows text as it
+arrives, and `cronjob`/`file`/`todo`/`session_search` out of the voice lane.
+**Negative results worth not retrying:** `cpu_threads=4` does not help whisper
+(1828 ms vs 1870 ms — already saturating), and the Discord gateway reconnects
+are not a latency source (5 isolated events across all boots).
+
+### Camera — DONE
 
 **Hermes can see.** Ask over Discord and it looks through the Camera Module 3
 and answers from the actual pixels — no second model, no local captioning.
@@ -547,6 +629,13 @@ non-build below still stands. Load-bearing properties:
   reaches the fixed action list in the laptop's own config.
 - **A subscriber is a viewer** — wakes the sensor, keeps tracking alive, lights
   `CAM`. No receiving gestures from a room without being counted as watching it.
+  This is why tracking stops ~8 s after the laptop client dies, which is working
+  as designed and not a bug to fix on the Pi. `HERMES_CAMERA_ALWAYS_TRACK=on`
+  unties it and carries a permanent `WATCH` badge as the price — see
+  `docs/SECURITY.md`. Default off.
+- **Deploy the client with `scripts/install-gesture-client.ps1`.** It sets the
+  working directory, uses `LogonType Interactive`, and actually starts the task
+   — see traps 38 and 39 for the two ways doing this by hand failed silently.
 - **The vocabulary is CLOSED** — FIST OPEN POINT PEACE THUMB CALL ROCK PINCH.
   `classify()` used to name every finger pattern, so a hand in view permanently
   asserted a command and moving it fired a run of them. Anything else is now

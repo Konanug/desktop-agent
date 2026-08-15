@@ -391,7 +391,91 @@ piece of work (a delivery target plugin), not a setting.
 
 Add ~2 s for STT (`base.en` at 2.5× realtime) and ~1–2 s for speech. So
 **roughly 10 s from finishing your sentence to hearing an answer**, most of it
-the model. `HERMES_VOICE_STT=tiny.en` trades accuracy for ~0.5 s.
+the model.
+
+## The fast lane — commands that never reach the model
+
+Six of those ten seconds are a model working out what "pause" means. It has one
+possible meaning. So `voice/fastlane.py` matches a closed set of phrases and
+publishes a named intent straight to the laptop, on the same `/intent` stream
+that `hermes_laptop` and gestures already use.
+
+MEASURED end to end, real `Transcriber`, real dispatch:
+
+| said | | |
+|---|---|---|
+| "pause the music" | **900 ms** | fast lane (was ~9.5 s) |
+| "open terminal" | **813 ms** | escape hatch |
+| "how many unread emails do I have" | 3051 ms | → Hermes |
+
+All seven built-in commands resolve in **843–990 ms**.
+
+This is not a new power. It puts a NAME on a stream; the laptop pulls it, looks
+it up in a config on its own disk, and ignores anything it does not recognise.
+Nothing said in this room can create a binding, so the blast radius is exactly a
+gesture's and strictly smaller than the agent's, which has `terminal`.
+
+**A command nobody received is not confirmed.** `/intent` reports how many
+subscribers got the name. Zero means the laptop is not listening and nothing
+happened, so it says *"Your laptop isn't connected, sir"* rather than "Playing."
+That is the panel's one rule, in speech instead of pixels.
+
+### Two stages, because the small model is only as good as its job
+
+| model | commands exact | mean |
+|---|---|---|
+| `tiny.en` | **15/18** | **888 ms** |
+| `base.en` | 15/18 | 1748 ms |
+
+Measured across three synthetic voices on realistic phrases, padded the way a
+real capture is. They are **identical** on the command vocabulary at half the
+cost, so `tiny.en` reads first and a match acts immediately. A miss re-reads
+with `base.en`, and **Hermes only ever sees that one** — which is not
+theoretical: asked "how many unread emails do I have", tiny heard *"how many
+unready mails"* and base heard it correctly. Questions cost ~1.1 s more on a
+turn that already costs ~10 s, and lose no accuracy.
+
+`HERMES_VOICE_STT_FAST=off` restores single-model behaviour.
+
+### The phrases are measured too
+
+Short commands fail in ways worth knowing, and none of this is about politeness:
+
+```
+go back          3/3        previous song    1/3   "Treat this song"
+last song        3/3        previous track   1/3   "Prove this truck"
+next song        3/3        skip back        0/3   "Get back!"
+```
+
+And **nothing here is one word**: a bare "pause" is ~0.6 s of audio, and whisper
+hallucinates on clips that short — it came back as *"toes"*, and `base.en` spent
+9.6 s deciding that. Two words is a floor, and `tests/test_fastlane.py` asserts
+it.
+
+### Adding your own
+
+`~/.config/hermes-pi/voice-commands.json` maps a phrase to an intent name:
+
+```json
+{
+  "play the album rumours": "ALBUM_RUMOURS",
+  "play the album rumors":  "ALBUM_RUMOURS"
+}
+```
+
+Both spellings is not a typo — every voice tested transcribes "rumours" as
+"rumors", because the model is American. Rather than guess, turn on
+`HERMES_VOICE_LOG_TRANSCRIPT=on`, say the phrase once, read what was actually
+heard in `journalctl --user -u hermes-voice`, and paste that in. **Turn it back
+off afterwards**: journald here is persistent, and a permanent record of
+everything said near this microphone is not a thing to leave running.
+
+The laptop needs the matching binding in its own `gestures.json`
+(`"HERMES ALBUM_RUMOURS"`), because the Pi only ever sends the name.
+`tests/test_fastlane.py` checks the shipped defaults on both sides against each
+other — written first as `PREV`/`VOL_UP`, which the laptop binds as
+`PREVIOUS`/`VOLUME_UP`, and three of seven commands would have done nothing at
+all while every layer reported success.
 
 ## Setup
 
@@ -422,7 +506,9 @@ from `sys.executable` rather than `PATH` for exactly this reason.
 |---|---|---|
 | `HERMES_VOICE_WAKE` | `hey_jarvis` | also `alexa`, `hey_mycroft`, `hey_marvin` |
 | `HERMES_VOICE_WAKE_THRESHOLD` | `0.5` | raise if it triggers on the television |
-| `HERMES_VOICE_STT` | `base.en` | `tiny.en` is faster and worse |
+| `HERMES_VOICE_STT` | `base.en` | what Hermes sees. `tiny.en` is faster and worse |
+| `HERMES_VOICE_STT_FAST` | `tiny.en` | the command read. `off` disables the stage |
+| `HERMES_VOICE_LOG_TRANSCRIPT` | `off` | log unmatched transcripts, to add phrases |
 | `HERMES_VOICE_CARD` | `plughw:wm8960soundcard` | |
 
 **There is no pretrained "hey hermes."** openWakeWord ships `alexa`,

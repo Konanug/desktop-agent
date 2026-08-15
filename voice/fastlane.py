@@ -62,17 +62,24 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "pause the music":      ("PAUSE",    "Paused."),
     "pause the song":       ("PAUSE",    "Paused."),
     "stop the music":       ("PAUSE",    "Paused."),
-    "next song":            ("NEXT",     "Next."),
-    "next track":           ("NEXT",     "Next."),
-    "skip the song":        ("NEXT",     "Next."),
-    "go back":              ("PREV",     "Going back."),
-    "last song":            ("PREV",     "Going back."),
-    "turn the volume up":   ("VOL_UP",   ""),
-    "turn it up":           ("VOL_UP",   ""),
-    "turn the volume down": ("VOL_DOWN", ""),
-    "turn it down":         ("VOL_DOWN", ""),
-    "open spotify":         ("SPOTIFY",  "Opening Spotify."),
+    "next song":            ("NEXT",        "Next."),
+    "next track":           ("NEXT",        "Next."),
+    "skip the song":        ("NEXT",        "Next."),
+    "go back":              ("PREVIOUS",    "Going back."),
+    "last song":            ("PREVIOUS",    "Going back."),
+    "turn the volume up":   ("VOLUME_UP",   ""),
+    "turn it up":           ("VOLUME_UP",   ""),
+    "turn the volume down": ("VOLUME_DOWN", ""),
+    "turn it down":         ("VOLUME_DOWN", ""),
+    "open spotify":         ("SPOTIFY",     "Opening Spotify."),
 }
+# PREVIOUS and VOLUME_UP, not PREV and VOL_UP, because those are the names the
+# laptop already binds. Written the other way first, and three of the seven
+# commands would have published a name nothing was listening for -- the far end
+# ignores what it does not know, silently and by design, so the failure would
+# have been "it just does nothing" with everything reporting success.
+# tests/test_fastlane.py checks the two sides against each other for that
+# reason; agreeing once is not the same as staying agreed.
 
 # Albums and anything else the owner adds, e.g.
 #   {"play the album rumours": "ALBUM_RUMOURS",

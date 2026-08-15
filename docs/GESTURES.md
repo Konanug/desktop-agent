@@ -298,8 +298,81 @@ Hands are `LEFT` / `RIGHT` / `?`. Gestures are `FIST OPEN POINT PEACE THUMB
 PINKY CALL THREE FOUR ROCK`, or `"N UP"` when the finger pattern has no name.
 
 Action types: `key`, `text` (types into the focused window), `log` (prints
-only — how you audition a gesture), and `run` (**refused unless
-`"allow_run": true`**, and `command` must be a list, never a shell string).
+only — how you audition a gesture), `app` and `spotify` (below), and `run`
+(**refused unless `"allow_run": true`**, and `command` must be a list, never a
+shell string).
+
+### Running it unattended
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-gesture-client.ps1
+```
+
+Registers a Scheduled Task, **starts it**, and reports whether exactly one
+`pythonw` is running. That last part is the point: the hand-written version of
+this lost a line twice, and the second time it was `Start-ScheduledTask`, so the
+task existed and had never run — which looks exactly like the task dying.
+
+Two things it gets right that are easy to miss by hand:
+
+- **`-WorkingDirectory`.** A Scheduled Task with no "Start in" runs from
+  `C:\Windows\System32`, so a relative `--config` found nothing and the client
+  exited within milliseconds — before it had a console or a log to say why.
+  `hermes_gesture.py` now also looks next to itself, so either half suffices.
+- **`LogonType Interactive`.** `SendInput` needs a desktop. A task set to run
+  whether or not the user is logged on runs in session 0, which has none, and
+  every keypress fails silently while the process stays alive and connected.
+
+Under `pythonw.exe` there is no console, and CPython's `print()` **silently
+does nothing** when `sys.stdout` is `None` — so the client redirects to
+`%LOCALAPPDATA%\hermes-gesture.log`. Watch it live:
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\hermes-gesture.log" -Tail 30 -Wait
+```
+
+Connection durations of exactly 10 s or 20 s in that log are **not** the client
+living that long. The server only notices a peer that vanished without closing
+its socket when the next heartbeat write fails, so those are detection latency.
+
+### Opening apps, and playing an album
+
+```json
+"HERMES SPOTIFY": { "type": "app",     "app": "spotify" },
+"HERMES RUMOURS": { "type": "spotify",
+                    "uri": "spotify:album:4aawyAB9vmqN3uQ7FjRGTy" }
+```
+
+`app` names a **key**, and this program owns the value — the list is closed and
+lives in the source, not the config. `spotify` is the one place a config
+supplies a URI, allowed only because the shape is pinned to `spotify:<kind>:<22
+base62 chars>`: no query string, no path, no arguments, nothing to smuggle. Get
+one with right-click → Share → **Copy Spotify URI**.
+
+**It launches `Spotify.exe`, not the `spotify:` scheme.** `os.startfile` is the
+correct API — it is `ShellExecute`, and it does not go near the browser — but it
+can only reach the desktop app if something registered a handler, and that
+registration is not ours: the Microsoft Store build registers differently from
+the standalone installer, neither registers before the app has run once, and a
+browser update can take the association. When it is missing Windows falls back
+to the web player, which is exactly the symptom, and no amount of correctness
+here fixes it. So the executable is tried first and the scheme is the fallback.
+The log says which route ran.
+
+### Testing one binding without waving at anything
+
+```powershell
+python hermes_gesture.py --config gestures.json --fire "HERMES SPOTIFY"
+```
+
+Runs that binding immediately and exits, **without connecting to the Pi** — so
+it separates "the binding is broken" from "the connection is broken" in one
+command instead of a gesture and a guess. If it still opens a browser, the
+handler is the problem rather than the code:
+
+```powershell
+reg query HKCR\spotify\shell\open\command
+```
 
 ### Things it refuses to do
 

@@ -221,6 +221,41 @@ compromised, and rely on the allowlist and the physical controls instead.
 - The camera tools take **no path, filename or URL** from the model — only a
   reason and a detail level.
 
+### `HERMES_CAMERA_ALWAYS_TRACK` — a deliberate widening, off by default
+
+Hand tracking is normally gated on an attached viewer: `apply_tracking()` starts
+it when someone subscribes and stops it 8 s after the last one leaves. That gate
+is not an implementation detail. **A camera that continuously works out what
+people in the room are doing is a materially different thing from one that could
+see them**, and tying the second to an attached viewer keeps it bounded by
+something the owner can observe.
+
+`HERMES_CAMERA_ALWAYS_TRACK=on` unties it, so a reconnecting laptop acts on the
+first gesture instead of waiting for the tracker to spin up. It is off by
+default and belongs in a systemd drop-in, not set in passing.
+
+What it costs, stated plainly:
+
+- The sensor is powered continuously (it implies `ALWAYS_ON` — tracking an
+  unpowered sensor is not a thing) and ~60 ms of a core goes on detection
+  forever, empty room or not.
+- The honest answer to "is it watching me" becomes **yes**.
+
+So it does not go quietly. The panel carries a separate, permanent **`WATCH`**
+badge for as long as it is set — a second word rather than a shade of the `CAM`
+light, because it is a different claim. `CAM` means the sensor is powered.
+`WATCH` means the room is being analysed.
+
+**There is no kernel fact underneath this one**, and that is the weak point.
+`CAM` reads the sensor's runtime power state, so a crashed or dishonest camera
+service cannot switch it off. "Is it running hand detection" is pure software
+with nothing comparable to read, so `WATCH` trusts the service's own
+`status.json`, exactly as the microphone indicator does. The fail direction
+therefore does real work: unreadable renders `WATCH?`, never nothing — though
+only while the sensor is powered, since claiming a demonstrably asleep camera is
+analysing the room is its own kind of lie, and a badge that is always lit is one
+nobody reads. `tests/test_camera_indicator.py` pins all four cases.
+
 ### Gestures → the laptop — BUILT 2026-08-06, and it does NOT cross the line
 
 Debounced gesture **edges** are published on `/events` (SSE, tcp/8081, same
@@ -277,6 +312,33 @@ own docs made worth checking.
   fails toward ON.
 - **No transcript is ever logged or published.** Journald gets length and
   timing; `status.json` carries state, never content.
+  `HERMES_VOICE_LOG_TRANSCRIPT=on` breaks that on purpose, to let you read what
+  whisper actually heard while adding a fast-lane phrase. It is off by default,
+  it logs only utterances that matched nothing, and it should be turned back off
+  — journald here is persistent.
+
+**The voice fast lane does not widen this** (`voice/fastlane.py`, added
+2026-08-14). Some spoken commands now skip the agent entirely and publish a
+named intent to the laptop instead. That is strictly *less* reach, not more:
+
+- The blast radius is a **gesture's**, not the agent's. It puts a NAME on the
+  `/intent` stream; the laptop pulls it, looks it up in a config on its own
+  disk, and ignores anything it does not know. Nothing said in this room can
+  create a binding, and no tool runs on the Pi.
+- The vocabulary is **closed and in the source**, and the match is the WHOLE
+  utterance — the same rule as the terminal escape hatch, for the same reason
+  that a microphone hears whatever the television says. A substring test fires
+  on "don't pause the music"; `tests/test_fastlane.py` was verified to fail
+  against one.
+- Owner-added phrases (`~/.config/hermes-pi/voice-commands.json`) supply a
+  *name*, checked against `[A-Za-z0-9_]{1,32}` before it is sent, and cannot
+  smuggle punctuation or length past the endpoint.
+- It runs **before** the rate limit, deliberately. These commands cost the agent
+  nothing, so rationing them against the agent's budget would be arbitrary — and
+  the escape hatch must not be refused for being asked too often.
+
+The residual risk is unchanged in kind and smaller in degree: a television that
+says "pause the music" as a complete sentence can pause your music.
 
 **The residual risk, plainly: a microphone authenticates nobody.** Anything
 audible — a podcast, a guest, a video call on a speaker — can start a

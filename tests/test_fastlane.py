@@ -229,6 +229,34 @@ def test_extra_entries_are_normalised_like_everything_else():
 
 # -- the escape hatch keeps priority ---------------------------------------
 
+def test_every_intent_has_a_binding_on_the_laptop():
+    """THE FAILURE THIS FILE EXISTS FOR MOST.
+
+    The two sides are deliberately decoupled -- the Pi publishes a name and the
+    laptop decides what it means, ignoring anything it does not recognise. That
+    is the security property, and it is also a silent failure mode: a name with
+    no binding does nothing, reports nothing, and looks exactly like success at
+    every point in between.
+
+    Written first as PREV / VOL_UP / VOL_DOWN against a laptop that binds
+    PREVIOUS / VOLUME_UP / VOLUME_DOWN, which is three of seven commands doing
+    nothing at all. Shipping defaults that do not line up is not something to
+    catch by hand twice.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    example = os.path.join(here, os.pardir, "clients", "windows",
+                           "gestures.example.json")
+    bound = {k.split(" ", 1)[1]
+             for k in json.load(open(example))["bindings"]
+             if k.startswith("HERMES ")}
+    want = {intent for intent, _ in fastlane.COMMANDS.values()}
+    missing = want - bound
+    assert not missing, (
+        f"the voice fast lane publishes {sorted(missing)}, which the shipped "
+        f"laptop config does not bind -- those commands would silently do "
+        f"nothing. Bound: {sorted(bound)}")
+
+
 def test_the_fast_lane_does_not_shadow_the_escape_hatch():
     """local.py's phrases must never also be fast-lane phrases: the escape
     hatch has to work with the network gone, and the fast lane needs it."""
