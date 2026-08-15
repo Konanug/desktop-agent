@@ -467,6 +467,15 @@ its COMMAND LINE, not on `Get-Process pythonw`: the Python in use may be shared,
 and on this laptop it is the Hermes agent's own venv, so a blanket kill would
 take out something unrelated.
 
+**And if you DO elevate to register a task, the account that installs it is not
+the account it must run as.** When UAC elevates a different admin account,
+`$env:USERNAME` in that shell is the admin; a task registered for it runs in the
+admin's session, so `SendInput` presses keys into a desktop nobody is looking at
+while the client connects, receives gestures and reports success. Take the
+principal from `Win32_ComputerSystem.UserName` — the console user — and print
+both when they differ. `LogonType Interactive` needs no password to register for
+another user, since the task only runs while that user is logged on.
+
 **There is no PowerShell on this Pi**, so nothing in
 `scripts/install-gesture-client.ps1` can be run before the owner runs it. Four
 consequences to keep: every optional refinement (`$trigger.Delay`,

@@ -324,6 +324,24 @@ given up is restart-on-failure, and that matters less than it sounds: losing the
 backoff. Force either with `-Method task` (in an elevated shell) or
 `-Method startup`.
 
+To use a task, elevate and ask for it:
+
+```powershell
+Start-Process powershell -Verb RunAs -ArgumentList '-NoExit','-ExecutionPolicy','Bypass',
+  '-File','C:\Users\alanm\hermes-gesture\install-gesture-client.ps1','-Method','task'
+```
+
+**A task registered by an admin must still run as the person at the keyboard.**
+If UAC elevates a *different* account — which it does whenever the everyday user
+is not itself an administrator — then `$env:USERNAME` inside that shell is the
+admin, and a task registered for it runs in the admin's session. `SendInput`
+then presses keys into a desktop nobody is looking at: the client connects,
+receives gestures, reports success, and nothing visibly happens. The installer
+therefore takes the principal from `Win32_ComputerSystem.UserName` (the console
+user), prints both identities, and says so when they differ. `-User` overrides.
+`LogonType Interactive` needs no password even when registering for someone
+else, because the task only runs while that user is logged on.
+
 **Exactly one of the two is ever installed**, and any client already running is
 stopped first. Having a Startup shortcut and a Scheduled Task at the same time
 has already happened here: the Pi sees `viewers=2` and every key gets pressed

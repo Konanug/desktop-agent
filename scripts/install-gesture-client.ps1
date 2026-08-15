@@ -54,10 +54,39 @@ param(
     # task    Scheduled Task only (may need an elevated PowerShell)
     # startup Startup shortcut only -- never needs admin
     [ValidateSet("auto", "task", "startup")]
-    [string]$Method = "auto"
+    [string]$Method = "auto",
+    # Who the task RUNS AS. Defaults to whoever is logged on at the console,
+    # which is not necessarily whoever is running this -- see below.
+    [string]$User = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+# WHO THE TASK RUNS AS IS NOT WHO INSTALLS IT, AND GETTING THAT WRONG FAILS
+# SILENTLY.
+#
+# Registering a task in the root folder needs elevation, so this gets run from
+# an admin PowerShell. If UAC elevated a DIFFERENT account -- which it does
+# whenever the everyday user is not itself an administrator -- then
+# $env:USERNAME is now the admin, and a task registered for it would run in
+# that account's session. SendInput would then press keys into a desktop nobody
+# is looking at: the client connects, receives gestures, reports success, and
+# nothing visibly happens.
+#
+# Win32_ComputerSystem.UserName is the account logged on at the console, which
+# is the one whose keyboard we mean. Fall back to the running user when it
+# cannot be read (no interactive session, RDP oddities).
+$isAdmin = ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $User) {
+    $User = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
+}
+if (-not $User) {
+    $User = $env:USERNAME
+    if ($env:USERDOMAIN) { $User = "$env:USERDOMAIN\$env:USERNAME" }
+}
 
 # NOT `param($Dir = $PSScriptRoot)`. That default came back EMPTY under
 # `powershell -File .\install-gesture-client.ps1`, and the first thing it
@@ -124,6 +153,22 @@ $pyexe = Join-Path (Split-Path -Parent $pythonw) "python.exe"
 Write-Host "python : $pythonw"
 Write-Host "script : $clientPy"
 Write-Host "config : $config"
+Write-Host ("admin  : " + $(if ($isAdmin) { "yes" } else { "no" }))
+Write-Host "runs as: $User"
+
+# The mismatch that would otherwise be found by wondering why nothing happens.
+$me = $env:USERNAME
+if ($env:USERDOMAIN) { $me = "$env:USERDOMAIN\$env:USERNAME" }
+if ($isAdmin -and $User -ne $me) {
+    Write-Host ""
+    Write-Host "note: you are running as $me but the task will run as $User." `
+        -ForegroundColor Yellow
+    Write-Host "      That is deliberate -- keystrokes have to land in the" `
+        -ForegroundColor Yellow
+    Write-Host "      session at the keyboard, not in the admin's. Override" `
+        -ForegroundColor Yellow
+    Write-Host "      with -User if that is wrong." -ForegroundColor Yellow
+}
 
 # OUR clients, not every pythonw on the machine.
 #
@@ -175,11 +220,12 @@ if ($Method -in @("auto", "task")) {
         # Interactive: SendInput needs a desktop. A task set to "run whether the
         # user is logged on or not" runs in session 0, which has none, and every
         # keypress fails -- silently, with the process alive and connected.
-        # NOT `$x = if (...) { } <newline> else { }` -- in an assignment the
-        # newline ends the statement and the else is a parse error.
-        $user = $env:USERNAME
-        if ($env:USERDOMAIN) { $user = "$env:USERDOMAIN\$env:USERNAME" }
-        $principal = New-ScheduledTaskPrincipal -UserId $user `
+        # $User is the CONSOLE user, resolved at the top -- deliberately not
+        # $env:USERNAME, which is the installer's account and differs from it
+        # whenever UAC elevated a separate admin. Interactive needs no password
+        # even when registering for another user, because the task only ever
+        # runs while that user is logged on.
+        $principal = New-ScheduledTaskPrincipal -UserId $User `
             -LogonType Interactive -RunLevel Limited
 
         # ExecutionTimeLimit 0 = no limit. The default stops the task after
@@ -201,6 +247,15 @@ if ($Method -in @("auto", "task")) {
     } catch {
         Write-Host "`nscheduled task refused: $($_.Exception.Message)" `
             -ForegroundColor Yellow
+        if (-not $isAdmin) {
+            # Say how, not just that. "Access is denied" on its own sends people
+            # to the wrong fix -- it reads like a permissions problem with the
+            # FILES, which they are not.
+            Write-Host "`nRegistering a task in the root folder needs an" `
+                "elevated PowerShell. To use one:" -ForegroundColor Yellow
+            Write-Host "  Start-Process powershell -Verb RunAs -ArgumentList" `
+                "'-NoExit','-ExecutionPolicy','Bypass','-File','$PSCommandPath','-Method','task'"
+        }
         if ($Method -eq "task") { exit 1 }
         Write-Host "falling back to a Startup shortcut, which needs no admin."
     }
@@ -233,7 +288,17 @@ Start-Sleep -Seconds 5
 
 # REPORT WHAT IS TRUE, NOT WHAT WAS ASKED FOR.
 $procs = @(Get-HermesClients)
-$log   = Join-Path $env:LOCALAPPDATA "hermes-gesture.log"
+
+# The client writes its log under the account it RUNS AS, which is not this
+# process's account when an admin installed it for someone else. Naming this
+# shell's LOCALAPPDATA would send you to a file that will never exist.
+$log = Join-Path $env:LOCALAPPDATA "hermes-gesture.log"
+if ($User -ne $me) {
+    $userLeaf = ($User -split "\\")[-1]
+    $guess = Join-Path (Join-Path (Split-Path -Parent $env:USERPROFILE) $userLeaf) `
+        "AppData\Local\hermes-gesture.log"
+    if (Test-Path -LiteralPath (Split-Path -Parent $guess)) { $log = $guess }
+}
 
 Write-Host ""
 if ($procs.Count -eq 1) {
