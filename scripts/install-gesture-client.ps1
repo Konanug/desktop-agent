@@ -141,6 +141,33 @@ Copy both into $Dir first:
 #
 # So every candidate is SMOKE TESTED by running it, and the first one that
 # actually executes is the one the task gets built around.
+# GUI subsystem or console subsystem? Read it out of the PE header.
+#
+# A "pythonw.exe" that is actually a CONSOLE binary explains two symptoms at
+# once, and both were observed: it inherits the console of whatever started it,
+# so closing that window kills it (measured -- 529 s of healthy running ended
+# the instant a PowerShell window closed, 110 s after the last gesture); and
+# its inherited stdout handle can exist while being unwritable, which is what
+# made every print() throw and left no log.
+#
+# Subsystem lives at the PE optional-header offset 0x5C: 2 = GUI, 3 = console.
+function Get-Subsystem {
+    param([string]$Exe)
+    try {
+        $fs = [IO.File]::OpenRead($Exe)
+        $br = New-Object IO.BinaryReader($fs)
+        $fs.Position = 0x3C
+        $peOff = $br.ReadInt32()
+        $fs.Position = $peOff + 0x5C
+        return $br.ReadUInt16()
+    } catch {
+        return 0
+    } finally {
+        if ($br) { $br.Dispose() }
+        if ($fs) { $fs.Dispose() }
+    }
+}
+
 function Test-Interpreter {
     param([string]$Exe)
     if (-not $Exe -or -not (Test-Path -LiteralPath $Exe)) { return $false }
@@ -172,15 +199,32 @@ $candidates += (Get-Command pyw.exe -ErrorAction SilentlyContinue |
 # python.exe last: it works, at the cost of a console window that sits there.
 if ($pathPy) { $candidates += $pathPy }
 
+# Two passes. A GUI-subsystem interpreter that runs is what we want; a console
+# one that runs is a fallback that WILL die with the window that started it, so
+# it is only taken if nothing better exists, and it is called out when it is.
 $pythonw = $null
+$console = @()
 foreach ($c in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
     Write-Host "testing $c ..." -NoNewline
-    if (Test-Interpreter $c) {
-        Write-Host " ok"
+    if (-not (Test-Interpreter $c)) {
+        Write-Host " does not run" -ForegroundColor Yellow
+        continue
+    }
+    $sub = Get-Subsystem $c
+    if ($sub -eq 2) {
+        Write-Host " ok (GUI)"
         $pythonw = $c
         break
     }
-    Write-Host " does not run" -ForegroundColor Yellow
+    Write-Host " runs, but is a CONSOLE binary" -ForegroundColor Yellow
+    $console += $c
+}
+if (-not $pythonw -and $console) {
+    $pythonw = $console[0]
+    Write-Host "`nNo GUI-subsystem python found. Using $pythonw" -ForegroundColor Yellow
+    Write-Host "It is a console binary, so it inherits the console of whatever" -ForegroundColor Yellow
+    Write-Host "starts it and DIES when that window closes. The task will still" -ForegroundColor Yellow
+    Write-Host "run it at logon, where there is no such window." -ForegroundColor Yellow
 }
 if (-not $pythonw) {
     Write-Error "no working Python found. Tried:`n  $($candidates -join "`n  ")"
