@@ -334,25 +334,61 @@ def frame_rms(frame) -> float:
 
 
 class Transcriber:
-    """faster-whisper, loaded lazily and kept resident."""
+    """faster-whisper, loaded lazily and kept resident.
 
-    def __init__(self, model: str = protocol.STT_MODEL):
+    TWO MODELS, NOT ONE, and the reason is latency rather than accuracy.
+
+    MEASURED on this Pi across three synthetic voices, on realistic phrases
+    padded the way a real capture is (PREROLL ahead, SILENCE_END behind):
+
+        model      commands exact   mean
+        tiny.en        15/18        888 ms
+        base.en        15/18       1748 ms
+
+    They are IDENTICAL on the command vocabulary and tiny is half the cost, so
+    a command has no reason to wait for the big model. Questions are different
+    -- they go to a model that will take seconds regardless, so they get the
+    full transcript and none of the accuracy is traded away.
+
+    Both stay resident. int8 base.en is ~74 MB and tiny.en ~39 MB against 7.9 GB,
+    and reloading per utterance would cost far more than it saves.
+    """
+
+    def __init__(self, model: str = protocol.STT_MODEL,
+                 fast_model: str = protocol.STT_FAST_MODEL):
         self.model_name = model
+        # "off" collapses this to the single-model behaviour it replaced.
+        self.fast_name = fast_model if fast_model not in ("", "off") else ""
         self.error: str | None = None
         self._m = None
+        self._fast = None
         self.last_ms = 0.0
+        self.last_model = ""
+
+    def _open(self, name: str):
+        from faster_whisper import WhisperModel
+        root = os.path.expanduser("~/.local/share/hermes-pi/models/whisper")
+        return WhisperModel(name, device="cpu", compute_type="int8",
+                            download_root=root)
 
     def load(self) -> bool:
         if self._m is not None:
             return True
         try:
-            from faster_whisper import WhisperModel
-            root = os.path.expanduser("~/.local/share/hermes-pi/models/whisper")
-            self._m = WhisperModel(self.model_name, device="cpu",
-                                   compute_type="int8", download_root=root)
+            self._m = self._open(self.model_name)
         except Exception as e:
             self.error = f"faster-whisper unavailable: {e}"
             return False
+        if self.fast_name:
+            # A MISSING SMALL MODEL IS NOT A FAILURE. It only ever saves time,
+            # so if it cannot be loaded -- first run with no network to fetch
+            # it, say -- the service must still work, just at the old speed.
+            try:
+                self._fast = self._open(self.fast_name)
+            except Exception as e:
+                print(f"[voice] {self.fast_name} unavailable ({e}); "
+                      f"using {self.model_name} for everything", flush=True)
+                self._fast = None
         self.error = None
         return True
 
@@ -360,18 +396,26 @@ class Transcriber:
     def available(self) -> bool:
         return self._m is not None
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    @property
+    def two_stage(self) -> bool:
+        """Is there actually a second, better read to fall back to?"""
+        return self._fast is not None
+
+    def transcribe(self, audio: np.ndarray, fast: bool = False) -> str:
         """int16 samples -> text. Empty string when nothing was said."""
-        if self._m is None:
+        m = (self._fast if fast and self._fast is not None else self._m)
+        if m is None:
             return ""
+        self.last_model = (self.fast_name if m is self._fast
+                           else self.model_name)
         t0 = time.perf_counter()
         pcm = audio.astype(np.float32) / 32768.0
         try:
             # beam_size=1 is greedy. MEASURED: the accuracy difference on short
             # command-style utterances did not justify the latency, and latency
             # is the thing being optimised here.
-            segs, _info = self._m.transcribe(pcm, beam_size=1, language="en",
-                                             vad_filter=False)
+            segs, _info = m.transcribe(pcm, beam_size=1, language="en",
+                                       vad_filter=False)
             text = " ".join(s.text for s in segs).strip()
         except Exception as e:                                # pragma: no cover
             self.error = f"transcribe failed: {e}"

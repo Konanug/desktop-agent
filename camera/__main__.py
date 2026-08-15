@@ -244,6 +244,12 @@ class Service:
             # Counts and a cursor are STATE. What the gesture WAS is content
             # and lives on /events, which is the same split as hands.json.
             "always_on": protocol.ALWAYS_ON,
+            # The panel reads this to decide whether to carry the WATCH badge.
+            # It is the CONFIGURED intent, not "is the tracker up right now":
+            # a tracker that has crashed must not quietly retire the badge that
+            # tells the room it is being analysed, and hands_tracking above
+            # already says whether it is running.
+            "always_track": protocol.ALWAYS_TRACK,
             "gestures_enabled": self.gestures_enabled,
             "gesture_cursor": self.gate.log.cursor,
             "gestures_fired": self.gate.fired,
@@ -338,6 +344,11 @@ class Service:
         camera that continuously analyses what people in the room are DOING is
         a materially different thing from one that streams pixels -- tying it
         to an attached viewer keeps it bounded by something the owner can see.
+
+        `live` is therefore the gate, and the ONE thing allowed to force it is
+        protocol.ALWAYS_TRACK, which the caller ors in. That switch pays for
+        itself with a permanent WATCH badge on the panel; nothing else may open
+        this without doing the same.
         """
         if not self.hands_enabled:
             return
@@ -787,16 +798,23 @@ def main(argv: list[str] | None = None) -> int:
             # line forever.
             svc._last_wake_try = now
             svc.ensure_awake()
+        # Live tuning stays keyed on a REAL viewer. ALWAYS_TRACK is not a reason
+        # to pin the short stream exposure forever: that cap costs a dim room
+        # most of its brightness (trap 24), and it is worth paying only while
+        # someone is actually looking at moving pixels.
         svc.apply_live_tuning(live)
-        svc.apply_tracking(live)
+        svc.apply_tracking(live or protocol.ALWAYS_TRACK)
 
         svc.pump_frames(now)
 
-        if protocol.ALWAYS_ON and not svc.sensor.is_open:
+        # Tracking an unpowered sensor is not a thing, so ALWAYS_TRACK implies
+        # ALWAYS_ON rather than quietly doing nothing.
+        keep_open = protocol.ALWAYS_ON or protocol.ALWAYS_TRACK
+        if keep_open and not svc.sensor.is_open:
             if now - svc._last_wake_try > 2.0:
                 svc._last_wake_try = now
                 svc.ensure_awake()
-        elif (svc.sensor.is_open and not live and not protocol.ALWAYS_ON
+        elif (svc.sensor.is_open and not live and not keep_open
                 and now - svc.last_request > svc.idle_timeout):
             svc.sleep_sensor()
 

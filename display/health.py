@@ -38,6 +38,13 @@ def _voice_unit_present() -> bool:
         os.path.expanduser("~/.config/systemd/user/hermes-voice.service"))
 
 
+def _camera_status_file() -> str:
+    """Where the camera service publishes STATE (never pixels)."""
+    import os
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return f"{base}/hermes-camera/status.json"
+
+
 def _sensor_power_file(sensor: str = "imx708") -> str | None:
     """Locate the camera sensor's runtime-PM status file, by device name.
 
@@ -64,6 +71,10 @@ class Health:
     clock_synced: bool = False
     # None means "could not tell". The panel must treat that as CAMERA ON.
     camera_on: bool | None = None
+    # Is the camera set to READ HANDS with nobody watching? Separate from
+    # camera_on because it is a bigger claim: powered is "it could see you",
+    # this is "it is working out what you are doing". None = could not tell.
+    camera_watch: bool | None = None
     # Same rule for the microphone: None means "could not tell", and the panel
     # must treat that as MIC ON. A microphone that is listening and does not
     # say so is the same failure as a camera that is.
@@ -82,6 +93,7 @@ class HealthProbe:
         self.camera_interval = camera_interval
         self._cache = Health()
         self._cam_file = _sensor_power_file()
+        self._cam_status = _camera_status_file()
         self._cam_checked = 0.0
         self._mic_file = _voice_status_file()
 
@@ -111,6 +123,26 @@ class HealthProbe:
         try:
             return open(self._cam_file).read().strip() == "active"
         except OSError:
+            return None
+
+    def _camera_watch(self) -> bool | None:
+        """Is the camera configured to analyse the room unattended?
+
+        NO KERNEL FACT EXISTS FOR THIS, and that is worth being explicit about.
+        `camera_on` reads the sensor's runtime power state, so a crashed or
+        dishonest camera service cannot switch that light off. "Is it running
+        hand detection" is pure software with nothing comparable underneath, so
+        this trusts the service's own status file, exactly as the microphone
+        indicator does and for the same reason.
+
+        Which makes the fail direction do real work again: unreadable means
+        UNKNOWN, and the caller renders unknown as WATCH? rather than as off.
+        """
+        try:
+            import json
+            with open(self._cam_status) as f:
+                return bool(json.load(f).get("always_track"))
+        except (OSError, ValueError):
             return None
 
     def _mic(self) -> tuple[bool | None, bool]:
@@ -153,6 +185,7 @@ class HealthProbe:
             if now - self._cam_checked >= self.camera_interval:
                 self._cam_checked = now
                 self._cache.camera_on = self._camera_on()
+                self._cache.camera_watch = self._camera_watch()
                 # The mic rides the same fast tick and for the same reason:
                 # turning the light on late is the unsafe direction. It is one
                 # small read from tmpfs.
@@ -177,6 +210,7 @@ class HealthProbe:
                 _run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"]) == "yes"
             ),
             camera_on=self._camera_on(),
+            camera_watch=self._camera_watch(),
             mic_on=mic_on,
             mic_busy=mic_busy,
             checked_at=now,

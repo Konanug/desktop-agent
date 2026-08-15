@@ -641,6 +641,106 @@ def test_the_url_action_still_refuses_protocol_handlers():
         raise AssertionError(f"url {bad!r} was accepted")
 
 
+def test_the_config_is_found_from_next_to_the_script():
+    """A Scheduled Task with no "Start in" runs from C:\\Windows\\System32.
+
+    The config was resolved against the working directory, so the program
+    exited before it had a console or a log to say why. That is indistinguish-
+    able from "the task never started", and it was diagnosed as exactly that.
+    """
+    import hermes_gesture as hg
+    here = os.path.dirname(os.path.abspath(hg.__file__))
+    cwd = os.getcwd()
+    try:
+        os.chdir("/")                     # stand in for System32
+        got = hg._find_config("gestures.example.json")
+        assert got == os.path.join(here, "gestures.example.json"), got
+        assert os.path.isfile(got), "found a path that does not exist"
+    finally:
+        os.chdir(cwd)
+
+
+def test_an_absolute_config_is_never_second_guessed():
+    """Only relative names get the fallback. Silently loading a different file
+    than the one named would be worse than failing."""
+    import hermes_gesture as hg
+    p = os.path.join(os.sep, "nowhere", "gestures.json")
+    assert hg._find_config(p) == p
+
+
+def test_a_present_config_in_the_working_directory_still_wins():
+    import hermes_gesture as hg
+    here = os.path.dirname(os.path.abspath(hg.__file__))
+    cwd = os.getcwd()
+    try:
+        os.chdir(here)
+        assert hg._find_config("gestures.example.json") == \
+            os.path.abspath("gestures.example.json")
+    finally:
+        os.chdir(cwd)
+
+
+def test_spotify_is_launched_by_executable_before_the_uri_scheme():
+    """os.startfile is correct and still not enough.
+
+    It can only reach the desktop app if something registered a handler for
+    "spotify:", and that registration is not ours: the Store build differs from
+    the standalone one, neither registers before first run, and a browser can
+    take the association. When it is missing Windows falls back to the web
+    player -- the exact reported symptom. Launching the exe skips the question.
+    """
+    import hermes_gesture as hg
+    calls = []
+
+    real_exe, real_pop = hg._spotify_exe, hg.subprocess.Popen
+    real_start = getattr(os, "startfile", None)
+    try:
+        hg._spotify_exe = lambda: r"C:\fake\Spotify.exe"
+        hg.subprocess.Popen = lambda a, **k: calls.append(("exe", a))
+        os.startfile = lambda u: calls.append(("shell", u))   # type: ignore
+
+        kb = hg.Keyboard(dry_run=False)
+        kb.dry_run = False        # this test runs on the Pi; see the module docstring
+        d = hg.Dispatcher({"url": "http://x", "bindings": {}}, kb)
+        uri = "spotify:album:4aawyAB9vmqN3uQ7FjRGTy"
+        assert d._open(uri) is True
+        assert calls == [("exe", [r"C:\fake\Spotify.exe", f"--uri={uri}"])], calls
+
+        # ... and with no executable it falls back rather than doing nothing.
+        calls.clear()
+        hg._spotify_exe = lambda: None
+        assert d._open(uri) is True
+        assert calls == [("shell", uri)], calls
+    finally:
+        hg._spotify_exe, hg.subprocess.Popen = real_exe, real_pop
+        if real_start is None:
+            del os.startfile
+        else:
+            os.startfile = real_start                          # type: ignore
+
+
+def test_a_non_spotify_uri_never_reaches_the_executable():
+    """The exe path is for spotify: only. Anything else goes to the shell, so
+    adding an app later cannot accidentally inherit Spotify's launcher."""
+    import hermes_gesture as hg
+    calls = []
+    real_exe, real_start = hg._spotify_exe, getattr(os, "startfile", None)
+    try:
+        hg._spotify_exe = lambda: r"C:\fake\Spotify.exe"
+        os.startfile = lambda u: calls.append(u)                # type: ignore
+        kb = hg.Keyboard(dry_run=False)
+        kb.dry_run = False
+        d = hg.Dispatcher({"url": "http://x", "bindings": {}}, kb)
+        assert d._open("ms-settings:") is True
+        assert calls == ["ms-settings:"], calls
+    finally:
+        hg._spotify_exe = real_exe
+        if real_start is None:
+            del os.startfile
+        else:
+            os.startfile = real_start                          # type: ignore
+
+
 def _run() -> int:
     fails = 0
     for name, fn in sorted(globals().items()):

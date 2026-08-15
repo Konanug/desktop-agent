@@ -34,7 +34,7 @@ import time
 
 import numpy as np
 
-from . import listen, local, protocol, sink, speak
+from . import fastlane, listen, local, protocol, sink, speak
 
 POLL_SPEAK = 0.25       # how often to check for something to say
 STATUS_PERIOD = 1.0
@@ -263,6 +263,49 @@ class Service:
         self.state = "listening"
         self.publish(force=True)
 
+    def dispatch_local(self, text: str) -> bool:
+        """Act on this transcript here, if it is something we own. True if the
+        turn is finished and nothing should go to the agent.
+
+        Both lanes run BEFORE the rate limit and before the network. For the
+        escape hatch that is essential -- being told "too many requests" while
+        locked out of your own machine would be absurd, and the situation it
+        exists for is exactly the one where the agent cannot be reached. For the
+        fast lane it is merely right: these commands cost the agent nothing, so
+        rationing them against the agent's budget would be arbitrary.
+        """
+        if not text:
+            return False
+
+        cmd = local.match(text)
+        if cmd is not None:
+            arg, reply = cmd
+            print(f"[voice] LOCAL COMMAND: {arg} (no agent, no network)",
+                  flush=True)
+            local.run(arg)
+            self.speaker.say(reply)
+            self.end_turn()
+            return True
+
+        hit = fastlane.match(text)
+        if hit is not None:
+            intent, reply = hit
+            ok, why = fastlane.send(intent)
+            print(f"[voice] FAST LANE: {intent} "
+                  f"({'sent' if ok else 'NOT SENT: ' + why})", flush=True)
+            # SPEAK WHAT HAPPENED, NOT WHAT WAS ASKED FOR. If the laptop is not
+            # listening the music did not start, and saying "Playing." would be
+            # the panel's one rule broken out loud.
+            if ok:
+                if reply:
+                    self.speaker.say(reply)
+            else:
+                self.speaker.say(why)
+            self.end_turn()
+            return True
+
+        return False
+
     def handle_wake(self) -> None:
         self.state = "capturing"
         self.publish(force=True)
@@ -284,30 +327,42 @@ class Service:
         secs = len(audio) / protocol.RATE
         self.state = "thinking"
         self.publish(force=True)
-        text = self.stt.transcribe(audio)
-        # LENGTH AND TIMING ONLY. The transcript is deliberately not logged:
-        # journald here is persistent, and a permanent record of everything
-        # said near this microphone is not something to create by accident.
+
+        # STAGE ONE: the small model, which is enough to recognise a command.
+        # MEASURED across three voices: tiny.en and base.en score IDENTICALLY on
+        # the command vocabulary (15/18 each) and tiny is half the cost --
+        # 888 ms against 1748 ms. So a command pays the small model only.
+        text = self.stt.transcribe(audio, fast=True)
         print(f"[voice] {secs:.1f}s audio -> {len(text)} chars "
-              f"in {self.stt.last_ms:.0f}ms", flush=True)
+              f"in {self.stt.last_ms:.0f}ms ({self.stt.last_model})", flush=True)
+        if self.dispatch_local(text):
+            return
+
+        # STAGE TWO: nothing matched, so this is a question and it is going to
+        # cost seconds of model time anyway. Re-transcribe properly -- HERMES
+        # NEVER SEES THE SMALL MODEL'S TRANSCRIPT, so nothing about answering
+        # questions got worse. The retry is skipped when there is no second
+        # model, in which case stage one already used the full one.
+        if self.stt.two_stage:
+            text = self.stt.transcribe(audio, fast=False)
+            print(f"[voice] re-read -> {len(text)} chars in "
+                  f"{self.stt.last_ms:.0f}ms ({self.stt.last_model})", flush=True)
+            # Try again: the small model may have mangled a phrase that the
+            # full one gets right, and a command should not reach the agent
+            # just because it was misheard the first time.
+            if self.dispatch_local(text):
+                return
         if not text:
             self.end_turn()
             return
 
-        # LOCAL COMMANDS FIRST, before the rate limit and before the network.
-        # These are the escape hatch, and it must work when the agent cannot be
-        # reached at all -- which is the situation it exists for. Not rate
-        # limited either: being told "too many requests" while locked out of
-        # your own machine would be absurd.
-        cmd = local.match(text)
-        if cmd is not None:
-            arg, reply = cmd
-            print(f"[voice] LOCAL COMMAND: {arg} (no agent, no network)",
-                  flush=True)
-            local.run(arg)
-            self.speaker.say(reply)
-            self.end_turn()
-            return
+        # WHAT WAS HEARD, only if asked for. Off by default and deliberately so
+        # -- journald here is persistent, and a permanent record of everything
+        # said near this microphone is not something to create by accident. It
+        # exists because adding a phrase to the fast lane means knowing what
+        # whisper actually heard, and guessing at that wasted a round already.
+        if protocol.LOG_TRANSCRIPT:
+            print(f"[voice] heard (unmatched): {text!r}", flush=True)
 
         why = self.limit.check()
         if why is not None:
@@ -394,6 +449,14 @@ def main(argv=None) -> int:
         svc.publish(force=True)
         return 1
     svc.publish(force=True)
+    # SAY WHICH LANES ARE ACTUALLY UP. "stt=base.en" alone was true and
+    # misleading once the fast stage existed: a tiny.en that failed to load
+    # leaves everything working and merely slow, which is the hardest kind of
+    # regression to notice.
+    print(f"[voice] fast read: "
+          f"{svc.stt.fast_name if svc.stt.two_stage else 'off'}  "
+          f"fast lane: {len(fastlane.COMMANDS) + len(fastlane.extra())} phrases",
+          flush=True)
     print("[voice] listening", flush=True)
 
     if args.listen_test:

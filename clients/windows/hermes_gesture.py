@@ -111,6 +111,40 @@ APPS = {
 SPOTIFY_URI = re.compile(
     r"^spotify:(album|playlist|track|artist|show|episode):[0-9A-Za-z]{22}$")
 
+# Where Spotify actually is, tried BEFORE the spotify: scheme.
+#
+# os.startfile IS the right API -- it is ShellExecute, the same thing a
+# double-click does, and it does not go anywhere near the default browser. But
+# it can only reach the desktop app if something registered a handler for
+# "spotify:", and that registration is not ours and is not reliable: the
+# Microsoft Store build registers differently from the standalone installer,
+# neither registers until the app has been run once, and a browser update can
+# take the association over. When it is missing, Windows falls back to the web
+# player -- which is the exact symptom, and no amount of correctness in this
+# file fixes it.
+#
+# Launching the executable with --uri= skips the question entirely. The URI is
+# already pinned by SPOTIFY_URI above, and it is passed as an argv element, so
+# there is no command line for it to break out of.
+SPOTIFY_EXE = (
+    r"%APPDATA%\Spotify\Spotify.exe",           # standalone installer
+    r"%LOCALAPPDATA%\Microsoft\WindowsApps\Spotify.exe",   # Store alias
+    r"%PROGRAMFILES%\Spotify\Spotify.exe",
+)
+
+
+def _spotify_exe() -> str | None:
+    """The first Spotify.exe that exists, or None.
+
+    Expanded at call time rather than at import: these are per-user paths and
+    the program may be installed while this is running.
+    """
+    for raw in SPOTIFY_EXE:
+        p = os.path.expandvars(raw)
+        if "%" not in p and os.path.isfile(p):
+            return p
+    return None
+
 
 # -- input synthesis -------------------------------------------------------
 # Virtual key codes. Deliberately a FIXED TABLE and not "look up any key the
@@ -379,20 +413,37 @@ class Dispatcher:
         return None, None
 
     def _open(self, uri: str) -> bool:
-        """Hand a NON-http URI to the shell, the way a double-click would.
+        """Launch a NON-http URI, preferring the app over the URI scheme.
 
         os.startfile, not webbrowser: webbrowser hands the string to the
         default BROWSER, which is the wrong program for a custom scheme and may
         drop it silently -- that is exactly why 'open spotify' kept landing on
         the web player. No shell string is built, so there is nothing to quote.
+
+        But os.startfile only reaches the app if "spotify:" is registered, and
+        that is not something this program controls (see SPOTIFY_EXE). So a
+        spotify: URI tries the executable FIRST and falls back to the scheme.
+        Which route ran is printed, because the last round of this was diagnosed
+        by guessing and the guess was wrong.
         """
         if self.kb.dry_run:
             print(f"  [dry-run] launch {uri}", flush=True)
             return True
+        if uri.startswith("spotify:"):
+            exe = _spotify_exe()
+            if exe:
+                # --uri= even for a bare "spotify:", which just opens the app.
+                subprocess.Popen([exe, f"--uri={uri}"],
+                                 close_fds=True)
+                print(f"  via {exe}", flush=True)
+                return True
+            print("  Spotify.exe not found -- falling back to the spotify: "
+                  "handler, which may open the web player", flush=True)
         if not hasattr(os, "startfile"):
             print("  ! this action needs Windows (no os.startfile)", flush=True)
             return False
         os.startfile(uri)                      # type: ignore[attr-defined]
+        print("  via the shell (os.startfile)", flush=True)
         return True
 
     def fire(self, ev: dict) -> bool:
@@ -425,17 +476,12 @@ class Dispatcher:
                 else:
                     webbrowser.open(action["url"])
             elif kind == "app":
-                # os.startfile, not webbrowser: webbrowser hands the string to
-                # the DEFAULT BROWSER, which is the wrong program for a
-                # non-http scheme and may simply drop it. startfile is the
-                # shell's own "open this the way the system would", which is
-                # what launches the registered desktop app. No shell string is
-                # built, so there is nothing to quote or escape.
                 if not self._open(APPS[str(action["app"]).strip().lower()]):
                     return False
             elif kind == "spotify":
-                # Opens the desktop app AND starts playback of that item. The
-                # app must already be installed; Windows resolves the scheme.
+                # Opens the desktop app AND starts playback of that item.
+                # _open prefers Spotify.exe over the spotify: scheme -- see
+                # SPOTIFY_EXE for why that is not the same thing.
                 if not self._open(action["uri"]):
                     return False
             elif kind == "run":
@@ -573,6 +619,27 @@ def _open_log(path: str | None) -> None:
           f"pid={os.getpid()} ---", flush=True)
 
 
+def _find_config(name: str) -> str:
+    """The config, found from the working directory OR from next to this file.
+
+    A Scheduled Task with no "Start in" runs from C:\\Windows\\System32, so a
+    relative --config resolves to a path that does not exist and the program
+    exits before it has a console, a log, or any way to say so. That looked
+    exactly like "the task never ran", and cost an evening.
+
+    An explicit path is honoured as given; only the default and other relative
+    names get the fallback, so this cannot silently load a different file than
+    the one that was asked for.
+    """
+    if os.path.isabs(name):
+        return name
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+    cwd = os.path.abspath(name)
+    if not os.path.isfile(cwd) and os.path.isfile(here):
+        return here
+    return cwd
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="hermes_gesture",
@@ -587,10 +654,15 @@ def main(argv=None) -> int:
                     help="append output here. Implied when there is no "
                          "console (pythonw.exe), where output otherwise "
                          "vanishes silently.")
+    ap.add_argument("--fire", default=None, metavar="NAME",
+                    help="run one binding NOW and exit, e.g. "
+                         "--fire \"HERMES SPOTIFY\". Never connects to the Pi. "
+                         "Use it to tell a broken binding apart from a broken "
+                         "connection.")
     args = ap.parse_args(argv)
     _open_log(args.log)
 
-    path = os.path.abspath(args.config)
+    path = _find_config(args.config)
     try:
         cfg = json.loads(open(path, encoding="utf-8").read())
     except OSError as e:
@@ -614,6 +686,23 @@ def main(argv=None) -> int:
     if not IS_WINDOWS and not args.dry_run:
         print(f"not running on Windows ({sys.platform}) -- forcing --dry-run",
               flush=True)
+
+    if args.fire is not None:
+        # Deliberately BEFORE any network use: the point of --fire is to prove
+        # whether a binding works, without the connection being able to be the
+        # reason it did not.
+        key = args.fire.strip()
+        action = disp.bindings.get(key)
+        if action is None:
+            print(f"no binding named {key!r}. Known: "
+                  f"{', '.join(sorted(disp.bindings))}", flush=True)
+            return 2
+        print(f"firing {key} ({action['type']})", flush=True)
+        hand, _, gesture = key.partition(" ")
+        ok = disp.fire({"hand": hand, "gesture": gesture})
+        print("fired" if ok else "did NOT fire", flush=True)
+        return 0 if ok else 1
+
     print(f"hermes-gesture  {cfg['url']}  "
           f"{len(disp.bindings)} bindings  cooldown {disp.cooldown}s"
           f"{'  [DRY RUN]' if kb.dry_run else ''}", flush=True)

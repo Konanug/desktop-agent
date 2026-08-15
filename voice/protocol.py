@@ -43,6 +43,27 @@ WAKE_THRESHOLD = float(os.environ.get("HERMES_VOICE_WAKE_THRESHOLD", "0.5"))
 # person talking, which is disqualifying regardless of how well it reads.
 STT_MODEL = os.environ.get("HERMES_VOICE_STT", "base.en")
 
+# The model that reads FIRST, only to see whether this is a fixed command.
+#
+# MEASURED across three voices on realistic phrases, padded as a real capture
+# is: tiny.en and base.en both score 15/18 exact on the command vocabulary, at
+# 888 ms against 1748 ms. Identical where it is used, half the price. It never
+# reaches the agent -- a phrase that is not a command is re-read with STT_MODEL
+# before anything is sent -- so question accuracy is untouched.
+#
+# "off" restores the single-model behaviour.
+STT_FAST_MODEL = os.environ.get("HERMES_VOICE_STT_FAST", "tiny.en")
+
+# Log the transcript of anything the fast lane did NOT match.
+#
+# Off by default. journald here is persistent and a permanent record of
+# everything said near this microphone is not a thing to create by accident.
+# It is worth having temporarily: adding a phrase to the fast lane means
+# knowing what whisper actually heard, and every voice tested renders "rumours"
+# as "rumors", which is not something to guess at.
+LOG_TRANSCRIPT = os.environ.get(
+    "HERMES_VOICE_LOG_TRANSCRIPT", "off").lower() in ("on", "1", "yes", "true")
+
 # Utterance capture. A person pausing mid-sentence must not end the turn, and a
 # person who has finished must not wait around.
 MAX_UTTERANCE = 10.0    # hard ceiling; a stuck endpointer cannot record forever

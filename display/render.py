@@ -155,7 +155,8 @@ class Renderer:
     # -- zones -----------------------------------------------------------
     def draw_header(self, r: Resolved, clock_ok: bool, now: float,
                     camera_on: bool | None = False,
-                    mic_on: bool | None = False, mic_busy: bool = False) -> int:
+                    mic_on: bool | None = False, mic_busy: bool = False,
+                    camera_watch: bool | None = False) -> int:
         img = Image.new("RGB", (self.w, self.header.h), BLACK)
         d = ImageDraw.Draw(img)
         _, accent = _LABEL.get(r.screen, ("", CYAN))
@@ -184,6 +185,27 @@ class Renderer:
             d.ellipse((x, s(12), x + s(9), s(21)), fill=col)
             d.text((x + s(14), s(8)), label, font=self.f_tiny, fill=col)
             x += s(52)
+
+            # WATCH -- the camera is reading hands with nobody attached.
+            #
+            # A SECOND BADGE AND NOT A DIFFERENT COLOUR, because it is a
+            # different claim. CAM means the sensor is powered: it could see
+            # you. WATCH means the room is being continuously analysed for what
+            # people in it are DOING. Those are not degrees of the same thing,
+            # and the gate that normally prevents the second one is the reason
+            # apply_tracking() ties tracking to an attached viewer at all.
+            #
+            # Same inverted fail direction, scoped: unknown reads WATCH? -- but
+            # only while the camera is powered, since claiming the room is
+            # being analysed by a sensor that is demonstrably asleep would be
+            # its own kind of lie, and a badge that is always on is one nobody
+            # reads.
+            if camera_watch is not False and (on or camera_watch):
+                w_on = camera_watch is True
+                w_col = RED if w_on else AMBER
+                d.text((x, s(8)), "WATCH" if w_on else "WATCH?",
+                       font=self.f_tiny, fill=w_col)
+                x += s(58) if w_on else s(66)
 
         # Microphone tally, same rule and the same inverted fail direction:
         # never say the mic is off unless that was positively observed.
@@ -381,7 +403,8 @@ class Renderer:
         return (self.draw_header(r, health.clock_synced, now,
                                  getattr(health, 'camera_on', False),
                                  getattr(health, 'mic_on', False),
-                                 getattr(health, 'mic_busy', False))
+                                 getattr(health, 'mic_busy', False),
+                                 getattr(health, 'camera_watch', False))
                 + self.draw_footer(r, state, health, now, usage))
 
     def draw(self, r: Resolved, state: dict | None, health,
@@ -390,7 +413,8 @@ class Renderer:
         n = self.draw_header(r, health.clock_synced, now,
                              getattr(health, 'camera_on', False),
                              getattr(health, 'mic_on', False),
-                             getattr(health, 'mic_busy', False))
+                             getattr(health, 'mic_busy', False),
+                             getattr(health, 'camera_watch', False))
         n += self.draw_body(r)
         n += self.draw_footer(r, state, health, now, usage)
         return n

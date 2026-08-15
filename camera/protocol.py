@@ -104,6 +104,26 @@ FRAME_DURATION_LIMITS = (
 ALWAYS_ON = _os.environ.get("HERMES_CAMERA_ALWAYS_ON", "off").lower() in (
     "on", "1", "yes", "true")
 
+# Keep READING HANDS with nobody watching. A strictly larger thing than
+# ALWAYS_ON, and deliberately a separate switch.
+#
+# ALWAYS_ON keeps the sensor POWERED. This keeps it being ANALYSED -- the
+# difference between a camera that could see the room and one that is
+# continuously working out what people in it are doing. apply_tracking() ties
+# tracking to an attached viewer precisely so that the second thing stays
+# bounded by something the owner can see, and this unties it.
+#
+# What it buys: a laptop that reconnects acts on the first gesture immediately,
+# instead of after the tracker starts. What it costs: ~60 ms of a core per pass
+# forever, and the honest answer to "is it watching me" becomes yes.
+#
+# So it does not go quietly. It implies ALWAYS_ON (tracking an unpowered sensor
+# is not a thing), and the panel carries a distinct, permanent WATCH badge for
+# as long as it is set -- see display/render.py. Default off; turn it on with a
+# systemd drop-in, not in passing.
+ALWAYS_TRACK = _os.environ.get("HERMES_CAMERA_ALWAYS_TRACK", "off").lower() in (
+    "on", "1", "yes", "true")
+
 # How long the sensor stays open after the last request. Cold wake measured at
 # ~434 ms, so this is not about hiding latency -- it is about not reopening the
 # sensor for a natural follow-up question, while still closing it within a
