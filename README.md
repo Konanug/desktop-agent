@@ -40,6 +40,31 @@ be dead; `systemctl is-active` is a fact.
 That rule generalises through the whole project, and most of the interesting
 bugs in `docs/` are cases where something asserted a thing it had not checked.
 
+## The enclosure
+
+Designed in CAD around the parts rather than the other way round: the panel sets
+the front face angle, the Pi's cooler sets the internal height, and the camera
+sits in its own aperture above the bezel so it looks at the room rather than the
+ceiling.
+
+| Assembled | Exploded |
+|---|---|
+| <img src="assets/cad/enclosure-assembled.png" alt="Isometric render of the closed enclosure: wedge-shaped body, recessed panel bezel, camera aperture above it, vented rear shell." width="100%"> | <img src="assets/cad/enclosure-exploded.png" alt="Exploded view: camera module and front bezel, the panel, the Raspberry Pi 5 with active cooler, the HAT above it, and the curved rear shell." width="100%"> |
+
+The stack, front to back: camera module and bezel, the 480×320 panel, the Pi 5
+with its active cooler, the ReSpeaker HAT sitting over the GPIO header, and a
+vented rear shell. The wedge is load-bearing in two senses — it puts the panel
+at a readable angle on a desk, and the volume behind it is what makes room for
+the cooler that keeps this at 60 °C under continuous vision work.
+
+<!-- VIDEO: replace this whole comment block with the GitHub attachment URL on
+     its own line. See assets/cad/README.md for how to get one -- a committed
+     .mp4 referenced as an image does NOT render a player, and <video> is
+     stripped from README markdown. -->
+
+> **▶ Explode animation** — an ~8 s clip goes here.
+> Committed copy: [`assets/cad/enclosure-exploded.mp4`](assets/cad/enclosure-exploded.mp4)
+
 ## Hardware
 
 | | |
