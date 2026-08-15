@@ -487,6 +487,30 @@ else { }` is a PARSE ERROR** in an assignment, because the newline ends the
 statement — write the `if` as a statement instead; and the script prints the
 client's own log on failure rather than naming its path.
 
+**42. `events closed (N events, Ts)` DATES THE DEATH; it does not diagnose the
+client.** `sent += 1` runs before the flush, so `0 events` means the first event
+*write* raised — the socket was already dead when the gesture arrived, not that
+the client mishandled it. Combined with the heartbeat that is the only thing
+detecting a silent peer, the arithmetic is: beats at 10 s and 20 s went into a
+send buffer and "succeeded"; the write at 28 s got the RST back. So the peer
+died between roughly t+10 and t+28 — a WINDOW, not a moment, and never the
+timestamp in the log line.
+
+Reading `(0 events, 29s)` as "the client crashed on its first event" is the
+tempting inversion and it sends you to read the client. Observed once already,
+against a client that was provably fine: running
+`clients/windows/hermes_gesture.py --dry-run` ON THE PI, against
+`127.0.0.1:8081`, received real gestures and acted on them. That works because
+the client is stdlib-only and uses explicit-width ctypes rather than
+`ctypes.wintypes` — reproducing on the Pi is a first move, not a last resort.
+
+**43. `Start-Process` from PowerShell makes the client a CHILD of that window.**
+The whole point of the laptop client is outliving the window it was started
+from, and starting it any other way tests a launch path that will never be used
+again. Launch the Startup shortcut through `explorer.exe` instead: the process
+is reparented to the shell, and it is then started exactly as it will be at
+every future logon — same shortcut, same launcher.
+
 **26. Feeding unrelated stills to a `RunningMode.VIDEO` tracker measures
 nothing.** VIDEO mode carries a track between frames and uses the previous
 frame as a prior, so jump-cutting between different photos breaks it. The

@@ -276,10 +276,19 @@ if (-not $installed) {
     $sc.WorkingDirectory = $Dir
     $sc.Description      = "Hermes gesture client"
     $sc.Save()
-    Start-Process -FilePath $pythonw -ArgumentList $arguments `
-        -WorkingDirectory $Dir | Out-Null
+
+    # LAUNCH IT THROUGH EXPLORER, NOT AS OUR OWN CHILD.
+    #
+    # Start-Process would make this PowerShell the parent, and the point of the
+    # whole exercise is a client that outlives the window it was started from.
+    # A process started this way is reparented to the shell, so closing the
+    # window cannot take it with it, and it is started exactly as it will be at
+    # every future logon -- the same shortcut, by the same launcher. Testing a
+    # different launch path than the one that will actually be used is how you
+    # verify something other than what ships.
+    Start-Process explorer.exe -ArgumentList "`"$startupLnk`"" | Out-Null
     $installed = "startup"
-    Write-Host "`ninstalled Startup shortcut and started it:"
+    Write-Host "`ninstalled Startup shortcut and started it via explorer:"
     Write-Host "  $startupLnk"
 }
 # Long enough for a client that is going to fail to have failed. The failures
