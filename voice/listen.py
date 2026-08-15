@@ -364,12 +364,17 @@ class Transcriber:
         self._fast = None
         self.last_ms = 0.0
         self.last_model = ""
+        self.timed_out = False      # did the last read hit STT_BUDGET
 
     def _open(self, name: str):
         from faster_whisper import WhisperModel
         root = os.path.expanduser("~/.local/share/hermes-pi/models/whisper")
+        # cpu_threads is NOT left at the default. Four threads against a 150%
+        # CPUQuota throttle each other; two is 30% faster here. The measurement
+        # and the cgroup counter that proves it are in protocol.STT_THREADS.
         return WhisperModel(name, device="cpu", compute_type="int8",
-                            download_root=root)
+                            download_root=root,
+                            cpu_threads=protocol.STT_THREADS)
 
     def load(self) -> bool:
         if self._m is not None:
@@ -401,27 +406,49 @@ class Transcriber:
         """Is there actually a second, better read to fall back to?"""
         return self._fast is not None
 
-    def transcribe(self, audio: np.ndarray, fast: bool = False) -> str:
-        """int16 samples -> text. Empty string when nothing was said."""
+    def transcribe(self, audio: np.ndarray, fast: bool = False,
+                   budget: float | None = None) -> str:
+        """int16 samples -> text. Empty string when nothing was said.
+
+        BOUNDED, because it was not and that cost two minutes of a microphone
+        appearing to be stuck on (protocol.STT_BUDGET). `transcribe` returns a
+        LAZY generator -- decoding happens as segments are consumed -- so
+        checking the clock between segments genuinely stops the work rather
+        than merely abandoning a result that is still being computed.
+
+        BE HONEST ABOUT WHAT THIS CANNOT DO: it cannot interrupt a single
+        segment mid-decode, so the bound is "one segment late", not exact. That
+        is enough for the failure it exists for, where the cost was spread over
+        a whole utterance. `timed_out` says whether it fired, because silently
+        returning half a sentence would be its own kind of lie.
+        """
         m = (self._fast if fast and self._fast is not None else self._m)
         if m is None:
             return ""
         self.last_model = (self.fast_name if m is self._fast
                            else self.model_name)
+        if budget is None:
+            budget = protocol.STT_BUDGET
+        self.timed_out = False
         t0 = time.perf_counter()
         pcm = audio.astype(np.float32) / 32768.0
+        parts = []
         try:
             # beam_size=1 is greedy. MEASURED: the accuracy difference on short
             # command-style utterances did not justify the latency, and latency
             # is the thing being optimised here.
             segs, _info = m.transcribe(pcm, beam_size=1, language="en",
                                        vad_filter=False)
-            text = " ".join(s.text for s in segs).strip()
+            for s in segs:
+                parts.append(s.text)
+                if time.perf_counter() - t0 > budget:
+                    self.timed_out = True
+                    break
         except Exception as e:                                # pragma: no cover
             self.error = f"transcribe failed: {e}"
             return ""
         self.last_ms = (time.perf_counter() - t0) * 1000
-        return text
+        return " ".join(parts).strip()
 
 
 class PreRoll:

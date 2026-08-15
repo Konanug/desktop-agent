@@ -54,6 +54,46 @@ STT_MODEL = os.environ.get("HERMES_VOICE_STT", "base.en")
 # "off" restores the single-model behaviour.
 STT_FAST_MODEL = os.environ.get("HERMES_VOICE_STT_FAST", "tiny.en")
 
+# HOW MANY CORES WHISPER MAY USE, AND WHY IT IS NOT "ALL OF THEM".
+#
+# ctranslate2 defaults to one thread per core (4 here). This service runs under
+# `CPUQuota=150%`, so those 4 threads ask for 400% of a budget that is 150%.
+# The kernel grants 150 ms of each 100 ms period and then FREEZES THE WHOLE
+# CGROUP for the remainder, repeatedly, while the threadpool's barrier spins
+# through what budget there is.
+#
+# This is not a theory -- it is on the cgroup's own counter. Measured on the
+# running service: `nr_throttled 1331` periods and `throttled_usec 111515149`
+# (111.5 s of frozen time) in 8 minutes of uptime.
+#
+# MEASURED, base.en on a 2.53 s clip, inside a 150% scope with the camera live:
+#     cpu_threads=0 (4)   4033 / 4184 / 4177 ms
+#     cpu_threads=2       2947 / 2962 / 2943 ms      <- chosen, 30% faster
+#     cpu_threads=1       3355 / 3332 / 3263 ms
+# Two threads is the quota (1.5 cores) rounded to something a scheduler can
+# actually run. NOTE this does not contradict the older "cpu_threads=4 does not
+# help" note in CLAUDE.md: that was measured WITHOUT the quota binding, where
+# the count genuinely did not matter. Under a quota it does.
+STT_THREADS = int(os.environ.get("HERMES_VOICE_STT_THREADS", "2"))
+
+# A CEILING ON DECODING, because there was not one and it cost two minutes.
+#
+# OBSERVED 2026-08-15: a 2.0 s utterance took 11421 ms in tiny.en and then
+# 116012 ms in base.en -- against measured norms of 888 ms and 1748 ms. For all
+# of that time the microphone was open and the panel was showing its listening
+# animation, so from the room it was indistinguishable from a service that had
+# locked on and would never stop. Nothing anywhere bounded it.
+#
+# Generous on purpose: this is a backstop against a runaway, not a latency
+# target. A turn that legitimately needs longer than this has already failed the
+# person waiting for it.
+STT_BUDGET = float(os.environ.get("HERMES_VOICE_STT_BUDGET", "20.0"))
+
+# Past this, a turn is SAID OUT LOUD in the log with its numbers. It is not an
+# error -- the turn still completes -- it is the difference between "the box
+# felt slow once" and a line naming which stage took the time.
+SLOW_TURN = float(os.environ.get("HERMES_VOICE_SLOW_TURN", "8.0"))
+
 # Log the transcript of anything the fast lane did NOT match.
 #
 # Off by default. journald here is persistent and a permanent record of

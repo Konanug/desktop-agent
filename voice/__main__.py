@@ -30,6 +30,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 
 import numpy as np
@@ -86,6 +87,14 @@ class Service:
 
         self.state = "starting"     # starting | listening | capturing |
                                     # thinking | speaking | muted | error
+        # WHEN the current state began. Without this a status file saying
+        # "thinking" is the same document whether that started 200 ms ago or
+        # two minutes ago, and those are completely different situations --
+        # exactly the pair that could not be told apart on 2026-08-15.
+        self.state_since = time.monotonic()
+        self._lock = threading.Lock()   # publish() now has two callers
+        self.slow_turns = 0
+        self.stt_timeouts = 0
         self.started_at = time.time()
         self.heard = 0              # utterances accepted
         self.refused = 0            # rate-limited or too short
@@ -130,7 +139,21 @@ class Service:
             "heard": self.heard,
             "refused": self.refused,
             "in_last_hour": self.limit.in_last_hour,
+            # HOW LONG THIS STATE HAS BEEN TRUE. The panel uses it to refuse to
+            # keep showing a listening animation for a capture that cannot
+            # still be running, and a human reading the file gets the one
+            # number that distinguishes "working" from "wedged".
+            "state_s": _num(time.monotonic() - self.state_since, 1),
+            # NOT A HEARTBEAT ON ITS OWN -- trap 27, learned on the camera and
+            # true again here. `updated_at` is now written by a heartbeat
+            # thread, so it proves the PROCESS is alive; only this proves the
+            # capture loop is. During a turn the main loop is deliberately
+            # inside handle_wake() and this grows, which is normal and is why
+            # state_s is the one to read alongside it.
             "loop_idle_s": _num(time.monotonic() - self.loop_tick),
+            "stt_threads": protocol.STT_THREADS,
+            "stt_timeouts": self.stt_timeouts,
+            "slow_turns": self.slow_turns,
             # Is sound arriving, and is it anywhere near the wake word?
             "level": _num(self.level, 1),
             "level_peak": _num(self.level_peak, 1),
@@ -147,16 +170,56 @@ class Service:
             "error": self.last_error,
         }
 
+    def set_state(self, name: str) -> None:
+        """Change state and say so immediately.
+
+        Every state change is published at once rather than on the next tick,
+        because the states people are looking at the panel for -- capturing,
+        speaking -- are often shorter than the tick.
+        """
+        if name != self.state:
+            self.state = name
+            self.state_since = time.monotonic()
+        self.publish(force=True)
+
     def publish(self, force: bool = False) -> None:
         now = time.time()
         if not force and now - self.last_status < STATUS_PERIOD:
             return
-        self.last_status = now
-        try:
-            _atomic_write(protocol.status_path(),
-                          json.dumps(self.status_doc(), indent=2).encode())
-        except OSError:
-            pass
+        # TWO THREADS WRITE THIS FILE NOW: the main loop and the heartbeat.
+        # _atomic_write's temp path is a fixed name, so without the lock two
+        # writers race on the same tmp file and os.replace can publish a
+        # half-built document -- a status file the panel is required to trust.
+        with self._lock:
+            self.last_status = now
+            try:
+                _atomic_write(protocol.status_path(),
+                              json.dumps(self.status_doc(), indent=2).encode())
+            except OSError:
+                pass
+
+    def heartbeat(self, stop: threading.Event) -> None:
+        """Keep status.json TRUE while the main loop is inside a turn.
+
+        THIS IS THE FIX FOR THE FAILURE THAT PROMPTED IT. A turn blocks the
+        main loop -- capture, then two transcriptions, then the webhook, then
+        speech -- and publish() was only ever called from that loop. So for the
+        whole of a turn the status file froze: same state, same `updated_at`,
+        no way for any reader to tell a turn in progress from a service that
+        had died holding the microphone open. Observed at two minutes, during
+        which the panel showed its listening animation the entire time and the
+        room had no reason to think anything other than "it is still listening
+        to me".
+
+        A thread rather than publish() calls sprinkled through the turn,
+        because the failure is unbounded blocking inside a library call and no
+        amount of sprinkling covers the inside of `WhisperModel.transcribe`.
+
+        Cheap: one small tmpfs write per second, and it is the same write the
+        loop was already doing.
+        """
+        while not stop.wait(STATUS_PERIOD):
+            self.publish(force=True)
 
     # -- capture --------------------------------------------------------
     def capture_utterance(self) -> np.ndarray | None:

@@ -16,7 +16,8 @@ Reached over **Discord** from any device. Inference runs on the user's
 **ChatGPT Plus subscription** — no API key, nothing billed. An 800x480 HDMI
 panel shows a JARVIS-style visual that tracks what the agent is actually doing.
 
-**Status: built, working, all 9 planned phases complete.** 17 commits.
+**Status: built, working, all 9 planned phases complete.** 74 commits.
+Camera, hand tracking, gestures→laptop, voice and the fast lane are all live.
 Everything below is verified on real hardware, not assumed.
 
 ---
@@ -697,7 +698,20 @@ real. The 6.36% → 0.73% improvement measured there stands.
 
 ---
 
-## Current task — latency; the fast lane is the answer
+## Where this stands (2026-08-15)
+
+Everything planned is built and running. The open items are in **Deferred /
+open** below and are, in order of how likely they are to bite: the **power
+rail** (D-3), the **unrun denied-user test** (D-1), and Spotify auth.
+
+There is a published systems report covering the whole build — architecture,
+algorithms, the Windows client, the security model and the measured numbers —
+written for a non-implementer audience. Regenerate or update it rather than
+writing a second one.
+
+---
+
+## Latency — DONE; the fast lane was the answer
 
 **The complaint was that it felt sluggish, and the measurement said the model
 was six of the ten seconds.** That part is ChatGPT serving time and is not a
@@ -798,6 +812,18 @@ publishes it on `/events` (SSE, tcp/8081, same token). `clients/windows/
 hermes_gesture.py` subscribes and presses keys — **stdlib only, no pip install
 on the laptop**. Full write-up: **`docs/GESTURES.md`**.
 
+**The laptop client is CONFIRMED STABLE as of 2026-08-15** — a single connection
+held 9+ minutes across a gateway restart and 107 gestures, against a previous
+best of 41 s. Getting there took traps 39–46 and cost two evenings; the root
+cause was **one byte** (trap 46) and the diagnosis order that finally worked is
+recorded there. If it regresses, read `LastTaskResult` FIRST.
+
+Autostart is `scripts/install-gesture-client.ps1`, which registers a Scheduled
+Task when elevated and falls back to a Startup shortcut when not, installs
+**exactly one** of the two, smoke tests the interpreter, requires a
+GUI-subsystem one, and starts it detached via `Win32_Process.Create`. Every one
+of those clauses is a bug that happened.
+
 **Hermes is not on this path and cannot be reached from it**, so the deliberate
 non-build below still stands. Load-bearing properties:
 
@@ -881,13 +907,25 @@ without being asked. What was learned and is worth keeping:
   shell access. "The right person got in" is not evidence the wrong person is
   kept out. Do before calling the prototype finished.
 - **D-2:** clock wrong ~34 s after boot (handled, documented).
+- **D-3 (NEW, 2026-08-15): the 5 V rail is marginal and the board browns out.**
+  Nine undervoltage events in one boot, six inside ten minutes, still recurring.
+  Measured min **4.833 V** against a ~4.63 V trip — and 2 Hz sampling cannot see
+  the transients the firmware actually trips on, so the true minimum is lower.
+  Numbers and the correlation (NOT causation — see `docs/HARDWARE.md`) are
+  written up there. **Wants the official 27 W USB-C PD supply**; suspect the
+  cable next. This is the most likely source of future "impossible" faults.
 - **Audio hardware is IN and working** (ReSpeaker 2-Mic Pi HAT, 2026-08-06).
   The old note here predicted an I2S HAT might contend with the SPI panel for
   GPIO; it does not, and the question is moot anyway now the SPI panel is gone.
   I2S uses GPIO 18-21, which never overlapped SPI0 (7-11) or the panel's
   control pins (17/24/25). **Speaker output is UNVERIFIED — nothing has been
-  plugged into the HAT yet.** Both mics measured live. Nothing in this project
-  uses the audio yet; voice is still not built.
+  plugged into the HAT yet.** Both mics measured live. (The old line here saying
+  "voice is still not built" was stale — voice shipped 2026-08-07; see
+  `docs/VOICE.md`.)
+- **Spotify Web API is available and NOT yet authed.** Hermes' own toolset,
+  trap 48 — `hermes tools` to enable, `hermes auth spotify` to log in.
+  `HERMES_SPOTIFY_CLIENT_ID` is already in `~/.hermes/.env`; `auth.json` has no
+  `spotify` provider yet. Premium is required for playback control.
 - Only one SSH key exists (`alanmyin-laptop`). Losing it means physical
   recovery. Adding a second key is cheap insurance.
 
